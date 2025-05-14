@@ -25,7 +25,7 @@ data GlobalOptions = GlobalOptions {
 data Command =
   HelpCmd
   | VersionCmd
-  | MenuFinderCmd FilePath
+  | ImporterCmd FilePath
   deriving stock (Show)
 
 
@@ -88,7 +88,7 @@ commandDefs =
     cmdArray = [
       ("help", pure HelpCmd, "Help about any command.")
       , ("version", pure VersionCmd, "Shows the version number of importer.")
-      , ("menu-finder", menuFinderOpts, "Finds menu items in a file.")
+      , ("import", menuFinderOpts, "Loads up the Tryton definitions from a directory and converts them to an EasyWordy application.")
       ]
     headArray = head cmdArray
     tailArray = tail cmdArray
@@ -100,5 +100,5 @@ commandDefs =
 
 menuFinderOpts :: Parser Command
 menuFinderOpts =
-  MenuFinderCmd <$> strArgument (metavar "FILE" <> help "File to find menu items in.")
+  ImporterCmd <$> strArgument (metavar "FILE" <> help "File to find menu items in.")
 

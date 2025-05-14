@@ -27,10 +27,12 @@ library
   exposed-modules:
       Commands
       Commands.Help
+      Commands.Importer
       Commands.MenuFinder
       Commands.Version
       DB.Connect
       DB.Opers
+      Generation.Fuddle
       Generation.Sql
       HttpSup.CorsPolicy
       MainLogic
