@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE BangPatterns #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use tuple-section" #-}
@@ -27,7 +26,9 @@ import Text.XML.Cursor (Cursor, attribute, child, content
 import qualified Options.Runtime as Rto
 import qualified Parsing.Python as Py
 import qualified Generation.Sql as Sq
-import qualified Generation.Fuddle as Fd
+import qualified Parsing.Tryton as Tt
+import qualified Parsing.Pot as Po
+
 
 data TargetFileKind =
     XmlFile
@@ -51,8 +52,11 @@ menuFinderCmd filePath rtOpts = do
     !pyFiles  = [ tf.pathTF | tf <- targetFiles, tf.kindTF == PyFile ]
   putStrLn $ "nbr xmlFiles: " <> show (length xmlFiles)
   handleXmlFiles xmlFiles
+  putStrLn "--------------------------------"
   putStrLn $ "nbr potFiles: " <> show (length potFiles)
-  -- handlePotFiles potFiles
+  handlePotFiles potFiles
+  putStrLn "--------------------------------"
+  putStrLn $ "nbr pyFiles:  " <> show (length pyFiles)
   handlePyFiles pyFiles
 
 
@@ -65,11 +69,15 @@ getTargetFiles !dir = do
       if isDir then
         getTargetFiles path
       else
-        case takeExtension path of
-          ".xml" -> pure [TargetFile { kindTF = XmlFile, pathTF = path }]
-          ".pot" -> pure [TargetFile { kindTF = PotFile, pathTF = path }]
-          ".py"  -> pure [TargetFile { kindTF = PyFile, pathTF = path }]
-          _       -> pure []
+        if head name == '.' then
+          pure []
+        else
+          case takeExtension path of
+            ".xml" -> pure [TargetFile { kindTF = XmlFile, pathTF = path }]
+            ".pot" -> pure [TargetFile { kindTF = PotFile, pathTF = path }]
+            ".po" -> pure [TargetFile { kindTF = PotFile, pathTF = path }]
+            ".py"  -> pure [TargetFile { kindTF = PyFile, pathTF = path }]
+            _       -> pure []
     pure (concat paths)
 
 
@@ -82,16 +90,16 @@ handleXmlFiles !files = do
     case xmlDoc of
       Just aDoc ->
         let
-          !items = Fd.extractItems aDoc
-          !defs = Fd.extractDefinitions aDoc
+          !items = Tt.extractItems aDoc
+          !defs = Tt.extractDefinitions aDoc
         in
         pure (items, defs, diffUTCTime endItemsTime startItemsTime)
       Nothing -> pure ([], [], 0)
   putStrLn $ "time to load xml Files: " <> show (sum (map (\(_, _, t) -> t) mbItems))
 
   let
-    !tree = Fd.buildTree $ concatMap (\(items, _, _) -> items) mbItems
-  Fd.printTree tree 0
+    !tree = Tt.buildTree $ concatMap (\(items, _, _) -> items) mbItems
+  Tt.printTree tree 0
   putStrLn "\n--------------------------------\n"
 
   !startDefsTime <- getCurrentTime
@@ -99,11 +107,11 @@ handleXmlFiles !files = do
     !allDefs = concatMap (\(_, defs, _) -> defs) mbItems
     !modelDefs =
       let
-        !initMap = Mp.fromList [(l.defModel, []) | l <- allDefs]
+        !initMap = Mp.fromList [(l.modelDF, []) | l <- allDefs]
       in
-      foldl (\accum d -> Mp.insertWith (++) d.defModel [d] accum) initMap allDefs
+      foldl (\accum d -> Mp.insertWith (++) d.modelDF [d] accum) initMap allDefs
   !endDefsTime <- getCurrentTime
-  Fd.printDefinitions modelDefs
+  Tt.printDefinitions modelDefs
   pure ()
 
 
@@ -116,14 +124,17 @@ loadXmlFile filePath = do
 
 
 handlePotFiles :: [FilePath] -> IO ()
-handlePotFiles files = pure ()
+handlePotFiles files = do
+  !potFiles <- forM files $ \aFile -> do
+    !potDoc <- Po.parseLocFileWithDiagnostics aFile
+    pure (aFile, potDoc)
+  putStrLn "\n-- Debug potFiles: --\n"
+  mapM_ (\(f, ms) -> putStrLn $ f <> ":\n" <> show ms <> "\n") potFiles
+  putStrLn "\n--------------------------------\n"
 
 
 handlePyFiles :: [FilePath] -> IO ()
 handlePyFiles files = do
-  putStrLn "--------------------------------"
-  putStrLn $ "nbr pyFiles:  " <> show (length files)
-
   !allElements <- forM files $ \aFile -> do
     !elements <- Py.extractElements aFile
     pure (aFile, elements)

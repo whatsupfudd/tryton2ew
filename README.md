@@ -5,5 +5,5 @@ an EasyWordy application constituants (Fuddle files, SQL definitions, Locales di
 ## Usage
 
 ```
-  stack exec -- extractor menu-finder <directory>
+  stack exec -- extractor import <directory>
 ```

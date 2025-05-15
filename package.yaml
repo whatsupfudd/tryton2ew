@@ -42,7 +42,7 @@ dependencies:
   - xml-conduit
   - containers
   # For parsing POT files:
-  - attoparsec
+  - megaparsec
   # For parsing Python files:
   - language-python
 

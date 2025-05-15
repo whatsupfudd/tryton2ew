@@ -42,6 +42,7 @@ library
       Options.Runtime
       Parsing.Pot
       Parsing.Python
+      Parsing.Tryton
   other-modules:
       Paths_extractor
   hs-source-dirs:
@@ -53,7 +54,6 @@ library
   ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
   build-depends:
       aeson
-    , attoparsec
     , base >=4.7 && <5
     , bytestring
     , containers
@@ -61,6 +61,7 @@ library
     , filepath
     , gitrev
     , language-python
+    , megaparsec
     , mtl
     , optparse-applicative
     , text
@@ -84,7 +85,6 @@ executable extractor
   ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       aeson
-    , attoparsec
     , base >=4.7 && <5
     , bytestring
     , containers
@@ -93,6 +93,7 @@ executable extractor
     , filepath
     , gitrev
     , language-python
+    , megaparsec
     , mtl
     , optparse-applicative
     , text
@@ -117,7 +118,6 @@ test-suite extractor-test
   ghc-options: -Wcompat -Widentities -Wincomplete-record-updates -Wincomplete-uni-patterns -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints -threaded -rtsopts -with-rtsopts=-N
   build-depends:
       aeson
-    , attoparsec
     , base >=4.7 && <5
     , bytestring
     , containers
@@ -126,6 +126,7 @@ test-suite extractor-test
     , filepath
     , gitrev
     , language-python
+    , megaparsec
     , mtl
     , optparse-applicative
     , text
