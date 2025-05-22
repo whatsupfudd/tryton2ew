@@ -146,33 +146,44 @@ buildTree !items =
     in roots
 
 
-printTree :: [MenuItem] -> Int -> IO ()
-printTree !items !depth =
-  let
-    !offset = T.replicate (depth * 2) " "
-  in
-  forM_ items $ \i ->
+printTree :: [MenuItem] -> Int -> FilePath -> IO ()
+printTree !items !depth !destPath =
+  TIO.writeFile (destPath </> "tree.txt") . T.intercalate "\n" $
+    printTree' items depth
+  where
+  printTree' :: [MenuItem] -> Int -> [T.Text]
+  printTree' !items !depth =
+    let
+      !offset = T.replicate (depth * 2) " "
+    in
+    map (\i ->
       let
         !label = maybe ("id=" <> i.idMI) ("menu: " <>) i.nameMI
         !parent = ("p=" <>) <$> i.parentMI
         !icon = ("i=" <>) <$> i.iconMI
         !piPart = T.intercalate ", " (maybeToList parent <> maybeToList icon)
         !details = " [id=" <> i.idMI <> if piPart == "" then "" else (", " <> piPart) <> "]"
-      in do
-      case depth of
-        0 -> putStrLn . T.unpack $ label <> details
-        _ -> putStrLn . T.unpack $ offset <> label <> maybe "" (\i -> " [" <> i <> "]") icon
-      printTree i.childrenMI (depth + 1)
+        prefix = case depth of
+            0 -> label <> details
+            _ -> offset <> label <> maybe "" (\i -> " [" <> i <> "]") icon
+      in
+      prefix <> "\n" <> T.intercalate "\n" (printTree' i.childrenMI (depth + 1))
+    ) items
 
 
-printDefinitions :: Mp.Map T.Text [Definition] -> IO ()
-printDefinitions !modelDefs =
-  forM_ (Mp.toList modelDefs) $ \(modelName, defs) -> do
-    putStrLn . T.unpack $ "-- model: " <> modelName <> " --"
-    forM_ defs $ \d -> do
-        putStrLn . T.unpack $ d.idDF <> ":"
-        forM_ (Mp.toList (fieldsDF d)) $ \(k,v) ->
-          putStrLn . T.unpack $ "  - " <> k <> ": " <> showField v
+printDefinitions :: Mp.Map T.Text [Definition] -> FilePath -> IO ()
+printDefinitions !modelDefs !destPath =
+  TIO.writeFile (destPath </> "definitions.txt") . T.intercalate "\n" $
+    map (\(modelName, defs) ->
+        "-- model: " <> modelName <> " --\n"
+        <> T.intercalate "\n" (map (\d ->
+              d.idDF <> ":\n"
+              <> T.intercalate "\n" (map (\(k,v) ->
+                    "  - " <> k <> ": " <> showField v
+                  ) (Mp.toList (fieldsDF d)))
+            ) defs)
+      ) (Mp.toList modelDefs)
+
 
 showField :: Field -> T.Text
 showField !f = case f.kindF of

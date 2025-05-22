@@ -13,6 +13,7 @@ import qualified Data.Text.IO as TIO
 import Data.Void (Void)
 
 import System.IO (hPutStrLn, stderr)
+import System.FilePath (takeFileName)
 
 import qualified Text.Megaparsec as M
 import qualified Text.Megaparsec.Char as C
@@ -21,17 +22,20 @@ import qualified Text.Megaparsec.Char.Lexer as CL
 
 type Parser = M.Parsec Void Text
 
+-- LocaleDefs : <locale> -> ( <module> -> [LocEntry] )
+type LocaleDefs = Map.Map T.Text (Map.Map T.Text [LocEntry])
+
 -- | Represents a single localization entry in the .po/.pot file
 data LocEntry = LocEntry
-  { entryContext :: !Text  -- ^ The msgctxt field (module ID)
-  , entryKey     :: !Text  -- ^ The msgid field (key)
-  , entryValue   :: !Text  -- ^ The msgstr field (value)
+  { contextEN :: !Text  -- ^ The msgctxt field (module ID)
+  , keyEN     :: !Text  -- ^ The msgid field (key)
+  , valueEN   :: !Text  -- ^ The msgstr field (value)
   } deriving (Show, Eq)
 
 -- | Represents a complete localization file with header and entries
 data LocFile = LocFile
-  { fileHeader  :: !Text      -- ^ The header content (usually content type info)
-  , fileEntries :: ![LocEntry] -- ^ The list of localization entries
+  { headerFI  :: !Text      -- ^ The header content (usually content type info)
+  , entriesFI :: ![LocEntry] -- ^ The list of localization entries
   } deriving (Show, Eq)
 
 -- | Parses a complete .po/.pot file with detailed error reporting
@@ -203,12 +207,12 @@ sc = do
 
 -- | Convert entries to a Map for efficient lookups
 entriesToMap :: [LocEntry] -> Map (Text, Text) Text
-entriesToMap = Map.fromList . map (\e -> ((entryContext e, entryKey e), entryValue e))
+entriesToMap = Map.fromList . map (\e -> ((contextEN e, keyEN e), valueEN e))
 
 -- | Look up a translation by context and key
 lookupTranslation :: LocFile -> Text -> Text -> Maybe Text
 lookupTranslation locFile ctx key = 
-  Map.lookup (ctx, key) (entriesToMap (fileEntries locFile))
+  Map.lookup (ctx, key) (entriesToMap (entriesFI locFile))
 
 
 diagnosePosition :: FilePath -> Int -> IO ()
@@ -250,9 +254,9 @@ formatHeader headerContent =
 -- | Format a localization entry back to the .po/.pot format
 formatEntry :: LocEntry -> Text
 formatEntry entry = T.unlines
-  [ "msgctxt " <> formatString (entryContext entry)
-  , "msgid " <> formatString (entryKey entry)
-  , "msgstr " <> formatString (entryValue entry)
+  [ "msgctxt " <> formatString (contextEN entry)
+  , "msgid " <> formatString (keyEN entry)
+  , "msgstr " <> formatString (valueEN entry)
   , ""  -- Empty line between entries
   ]
   where
@@ -274,20 +278,20 @@ formatEntry entry = T.unlines
 -- | Save a localization file
 saveLocFile :: FilePath -> LocFile -> IO ()
 saveLocFile filePath locFile = do
-  let headerText = formatHeader (fileHeader locFile)
-      entriesText = T.concat $ map formatEntry (fileEntries locFile)
+  let headerText = formatHeader (headerFI locFile)
+      entriesText = T.concat $ map formatEntry (entriesFI locFile)
       content = headerText <> entriesText
   TIO.writeFile filePath content
 
 -- | Merge two localization files (e.g., to update translations)
 mergeLocFiles :: LocFile -> LocFile -> LocFile
 mergeLocFiles baseFile newFile =
-  let baseMap = entriesToMap (fileEntries baseFile)
-      newMap = entriesToMap (fileEntries newFile)
+  let baseMap = entriesToMap (entriesFI baseFile)
+      newMap = entriesToMap (entriesFI newFile)
       -- New entries take precedence, but we keep the header from the base file
       mergedMap = Map.union newMap baseMap
       mergedEntries = map (\((ctx, key), val) -> LocEntry ctx key val) (Map.toList mergedMap)
-  in LocFile (fileHeader baseFile) mergedEntries
+  in LocFile (headerFI baseFile) mergedEntries
 
 -- | Create a default header with UTF-8 content type
 defaultHeader :: Text
@@ -318,3 +322,20 @@ validatePoFile filePath = do
 -- | Print a user-friendly error message to stderr
 printParseError :: M.ParseErrorBundle Text Void -> IO ()
 printParseError = hPutStrLn stderr . M.errorBundlePretty
+
+
+fixLocale :: T.Text -> T.Text -> T.Text
+fixLocale locale mName =
+  let
+    moduleComps = T.splitOn "/" mName
+    moduleName = case reverse moduleComps of
+      (_:p2:_) -> p2
+      _ -> ""
+  in
+  case T.breakOn "." locale of
+    (_, "") -> locale
+    (aFileName, _) ->
+      if aFileName == moduleName then
+        "en"
+      else
+        aFileName

@@ -45,6 +45,8 @@ dependencies:
   - megaparsec
   # For parsing Python files:
   - language-python
+  # For creating text templates:
+  - raw-strings-qq
 
 
 

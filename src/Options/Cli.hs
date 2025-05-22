@@ -25,7 +25,7 @@ data GlobalOptions = GlobalOptions {
 data Command =
   HelpCmd
   | VersionCmd
-  | ImporterCmd FilePath
+  | ImporterCmd FilePath FilePath
   deriving stock (Show)
 
 
@@ -100,5 +100,5 @@ commandDefs =
 
 menuFinderOpts :: Parser Command
 menuFinderOpts =
-  ImporterCmd <$> strArgument (metavar "FILE" <> help "File to find menu items in.")
-
+  ImporterCmd <$> strArgument (metavar "FILE" <> help "Directory containing the Tryton definitions.")
+              <*> strArgument (metavar "FILE" <> help "Directory to save the EW app in.")

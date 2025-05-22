@@ -1,5 +1,4 @@
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE LambdaCase #-}
 -- RankNTypes enables the 'forall', which in turns qualifies the 'annot' type variable to be a class of 'Show'.
 module Parsing.Python where
 

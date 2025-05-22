@@ -32,6 +32,8 @@ library
       Commands.Version
       DB.Connect
       DB.Opers
+      Generation.EasyWordy
+      Generation.EwTypes
       Generation.Fuddle
       Generation.Sql
       HttpSup.CorsPolicy
@@ -64,6 +66,7 @@ library
     , megaparsec
     , mtl
     , optparse-applicative
+    , raw-strings-qq
     , text
     , time
     , unix
@@ -96,6 +99,7 @@ executable extractor
     , megaparsec
     , mtl
     , optparse-applicative
+    , raw-strings-qq
     , text
     , time
     , unix
@@ -129,6 +133,7 @@ test-suite extractor-test
     , megaparsec
     , mtl
     , optparse-applicative
+    , raw-strings-qq
     , text
     , time
     , unix
