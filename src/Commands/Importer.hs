@@ -50,7 +50,7 @@ data TargetFile = TargetFile {
   }
 
 
-type UiDefs = ([Tt.MenuItem], Mp.Map T.Text [Tt.Definition])
+type UiDefs = ([Tt.MenuItem], Mp.Map T.Text [Tt.ModelElement], Tt.ViewDefs)
 
 
 menuFinderCmd :: FilePath -> FilePath -> Rto.RunOptions -> IO ()
@@ -83,7 +83,10 @@ menuFinderCmd srcPath destPath rtOpts =
     locales <- handlePotFiles potFiles destPath
     putStrLn $ "nbr pyFiles:  " <> show (length pyFiles)
     dbDefs <- handlePyFiles pyFiles destPath
+    genStartTime <- getCurrentTime
     rez <- Ew.generateApp destPath uiDefs locales dbDefs
+    genEndTime <- getCurrentTime
+    putStrLn $ "@[menuFinderCmd] time to generate: " <> show (diffUTCTime genEndTime genStartTime)
     pure ()
 
 
@@ -110,37 +113,36 @@ getTargetFiles !dir = do
 
 handleXmlFiles :: [FilePath] -> FilePath -> IO UiDefs
 handleXmlFiles !files destPath = do
+  !startItemsTime <- getCurrentTime
   !mbItems <- forM files $ \aFile -> do
-    !startItemsTime <- getCurrentTime
     !xmlDoc <- loadXmlFile aFile
-    !endItemsTime <- getCurrentTime
     case xmlDoc of
       Just aDoc ->
         let
-          !items = Tt.extractItems aDoc
-          !defs = Tt.extractDefinitions aDoc
-        in
-        pure (items, defs, diffUTCTime endItemsTime startItemsTime)
-      Nothing -> pure ([], [], 0)
-  putStrLn $ "time to load xml Files: " <> show (sum (map (\(_, _, t) -> t) mbItems))
+          items = Tt.extractMenuItems aDoc
+          (views, (fileName, dirPath, nameParts)) = Tt.extractDefinitions aFile aDoc
+        in do
+        -- putStrLn $ "@[handleXmlFiles] fn: " <> fileName <> ", dir: " <> show dirPath <> ", nameParts: " <> show nameParts <> "\n   defs: " <> show views
+        pure (items, (T.pack fileName, views))
+      Nothing -> pure ([], ("", []))
+  !endItemsTime <- getCurrentTime
+  putStrLn $ "@[handleXmlFiles] time to load xml files: " <> show (diffUTCTime endItemsTime startItemsTime)
 
   let
-    !tree = Tt.buildTree $ concatMap (\(items, _, _) -> items) mbItems
+    !tree = Tt.buildTree $ concatMap fst mbItems
   Tt.printTree tree 0 destPath
   -- putStrLn "\n--------------------------------\n"
 
   !startDefsTime <- getCurrentTime
   let
-    !allDefs = concatMap (\(_, defs, _) -> defs) mbItems
-    !modelDefs =
-      let
-        !initMap = Mp.fromList [(l.modelDF, []) | l <- allDefs]
-      in
-      foldl (\accum d -> Mp.insertWith (++) d.modelDF [d] accum) initMap allDefs
+    (modelDefs, viewDefs) = Tt.processDefinitions $ map snd mbItems
+  -- putStrLn $ "@[handleXmlFiles] modelDefs: " <> show modelDefs
+  -- putStrLn $ "@[handleXmlFiles] viewDefs: " <> show viewDefs
   !endDefsTime <- getCurrentTime
-  putStrLn $ "time to make model map: " <> show (diffUTCTime endDefsTime startDefsTime)
-  Tt.printDefinitions modelDefs destPath
-  pure (tree, modelDefs)
+  putStrLn $ "@[handleXmlFiles] time to make viewDefs: " <> show (diffUTCTime endDefsTime startDefsTime)
+  Tt.printModelDefs modelDefs destPath
+  Tt.printViewErrs viewDefs destPath
+  pure (tree, modelDefs, viewDefs)
 
 
 loadXmlFile :: FilePath -> IO (Maybe Document)
@@ -161,7 +163,7 @@ handlePotFiles files destPath = do
       fileName = takeFileName aFile
     pure (T.pack moduleName, T.pack fileName, potDoc)
   !endParseTime <- getCurrentTime
-  putStrLn $ "time to parse potFiles: " <> show (diffUTCTime endParseTime startParseTime)
+  putStrLn $ "@[handlePotFiles] time to parse: " <> show (diffUTCTime endParseTime startParseTime)
 
   -- putStrLn "\n-- Debug potFiles: --\n"
   TIO.writeFile (destPath </> "potFiles.txt") . T.pack . L.intercalate "\n" $ map (\(mName, fileName, rez) ->
@@ -177,7 +179,7 @@ handlePotFiles files destPath = do
     (errors, locEntries) = foldr (\(mName, locale, aResult) (errs, corrects) ->
         case aResult of
           Left err -> (err : errs, corrects)
-          Right locEntries -> (errs, (mName, locale, locEntries) : corrects)
+          Right locEntries -> (errs, (T.encodeUtf8 mName, T.encodeUtf8 locale, locEntries) : corrects)
       ) ([], []) potFiles
     reorgLocales =
       foldl (\accum (mName, locale, locFile) ->
@@ -195,9 +197,9 @@ handlePotFiles files destPath = do
                 newModuleMap = Mp.singleton mName locFile.entriesFI
               in
               Mp.insert updLocale newModuleMap accum
-        ) (Mp.empty :: Mp.Map T.Text (Mp.Map T.Text [Po.LocEntry])) locEntries
+        ) (Mp.empty :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString [Po.LocEntry])) locEntries
   !endProcTime <- getCurrentTime
-  putStrLn $ "time to process potFiles: " <> show (diffUTCTime endProcTime startProcTime)
+  putStrLn $ "@[handlePotFiles] time to process: " <> show (diffUTCTime endProcTime startProcTime)
   TIO.writeFile (destPath </> "reorgLocales.txt") $ T.pack (show reorgLocales)
   pure reorgLocales
 
@@ -209,7 +211,7 @@ handlePyFiles files destPath = do
     !elements <- Py.extractElements aFile
     pure (aFile, elements)
   !endParseTime <- getCurrentTime
-  putStrLn $ "time to parse pyFiles: " <> show (diffUTCTime endParseTime startParseTime)
+  putStrLn $ "@[handlePyFiles] time to parse: " <> show (diffUTCTime endParseTime startParseTime)
   -- putStrLn "\n-- Debug elements: --\n"
   TIO.writeFile (destPath </> "elements.txt") . T.pack . L.intercalate "\n" $ map (\(fp, ms) ->  fp <> ":\n" <> show ms <> "\n") allElements
   --putStrLn "\n--------------------------------\n"
@@ -228,5 +230,5 @@ handlePyFiles files destPath = do
       "@[handlePyFiles] " <> f <> if msgs == "" then "" else ":\n" <> msgs
     ) eiFileDefs
   !endGenTime <- getCurrentTime
-  putStrLn $ "time to gen tableDefs: " <> show (diffUTCTime endGenTime startGenTime)
+  putStrLn $ "@[handlePyFiles] time to process: " <> show (diffUTCTime endGenTime startGenTime)
   pure []

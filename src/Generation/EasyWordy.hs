@@ -21,7 +21,7 @@ import qualified Parsing.Pot as Po
 import Generation.EwTypes
 
 
-type UiDefs = ([Tt.MenuItem], Mp.Map T.Text [Tt.Definition])
+type UiDefs = ([Tt.MenuItem], Mp.Map T.Text [Tt.ModelElement], Tt.ViewDefs)
 
 {-
 Need to generate:
@@ -72,8 +72,8 @@ generateApp destPath uiDefs locales dbDefs =
       pure $ Right ()
 
 
-genLeftMenu :: UiDefs -> Mp.Map T.Text CompLocales -> Either String [Menu]
-genLeftMenu (menuItems, modelDefs) locales =
+genLeftMenu :: UiDefs -> Mp.Map Bs.ByteString CompLocales -> Either String [Menu]
+genLeftMenu (menuItems, modelDefs, _) locales =
   let
     enLocales = Mp.lookup "en" locales
     iconDefs = Mp.lookup "ir.ui.icon" modelDefs
@@ -82,8 +82,8 @@ genLeftMenu (menuItems, modelDefs) locales =
   Right menus
 
 
-genComponents :: UiDefs -> [Menu] -> Mp.Map T.Text CompLocales -> [Component]
-genComponents (menuItems, modelDefs) leftMenus locales =
+genComponents :: UiDefs -> [Menu] -> Mp.Map Bs.ByteString CompLocales -> [Component]
+genComponents (menuItems, modelDefs, viewDefs) leftMenus locales =
   concatMap (\aMenu ->
       let
         componentName = convertMenuID aMenu.mid
@@ -96,7 +96,7 @@ genComponents (menuItems, modelDefs) leftMenus locales =
             , functions = []
             , locales = Mp.empty  -- Fix this.
           }
-        childrenComponents = genComponents (menuItems, modelDefs) aMenu.children locales
+        childrenComponents = genComponents (menuItems, modelDefs, viewDefs) aMenu.children locales
       in
       topComp : childrenComponents
     ) leftMenus
@@ -187,18 +187,18 @@ demoFct =
   <> templ_1
   <> T.encodeUtf8 component.moduleName <> "\" ]]\n"
 
-consolidateLocales :: Po.LocaleDefs -> Mp.Map T.Text CompLocales
+consolidateLocales :: Po.LocaleDefs -> Mp.Map Bs.ByteString CompLocales
 consolidateLocales =
   Mp.foldlWithKey consoLocale Mp.empty
   where
-  consoLocale :: Mp.Map T.Text CompLocales -> T.Text -> Mp.Map T.Text [Po.LocEntry] -> Mp.Map T.Text CompLocales
+  consoLocale :: Mp.Map Bs.ByteString CompLocales -> Bs.ByteString -> Mp.Map Bs.ByteString [Po.LocEntry] -> Mp.Map Bs.ByteString CompLocales
   consoLocale accum aLocale modContent =
       let
         compLoc = fromMaybe defaultCompLocales (Mp.lookup aLocale accum)
         updLoc = foldl consoKind compLoc (Mp.toList modContent)
       in
       Mp.insert aLocale updLoc accum
-  consoKind :: CompLocales -> (T.Text, [Po.LocEntry]) -> CompLocales
+  consoKind :: CompLocales -> (Bs.ByteString, [Po.LocEntry]) -> CompLocales
   consoKind compLoc (aModule, locEntries) =
     foldl (\accum aLocEntry ->
         let
@@ -214,32 +214,32 @@ consolidateLocales =
           _ -> accum { errors = "unknown kind: " <> kind : accum.errors }
       ) compLoc locEntries
 
-  locEntryKind :: Po.LocEntry -> (T.Text, T.Text)
+  locEntryKind :: Po.LocEntry -> (Bs.ByteString, Bs.ByteString)
   locEntryKind aLocEntry =
     let
-      (someKind, rest) = T.breakOn ":" aLocEntry.contextEN
+      (someKind, rest) = Bs.break (== 58) aLocEntry.contextEN  -- 58 -> :
     in
     case rest of
       "" -> ("error: no content", "")
       _ ->
         if someKind `elem` ["model", "field", "help", "selection", "view", "wizardButton"] then
-          (someKind, T.tail rest)
+          (someKind, Bs.tail rest)
         else
           ("error: unknown kind: " <> someKind, "")
 
-  updLocModel :: ModelLocale -> T.Text -> Po.LocEntry -> ModelLocale
+  updLocModel :: ModelLocale -> Bs.ByteString -> Po.LocEntry -> ModelLocale
   updLocModel accum content aLocEntry =
-    case T.breakOn "," content of
+    case Bs.break (== 44) content of     -- 44 -> ,
       (_, "") -> accum
       (modelName, rest) ->
         let
           modelLoc = fromMaybe Mp.empty (Mp.lookup modelName accum)
         in
-        case T.breakOn ":" (T.tail rest) of
+        case Bs.break (== 58) (Bs.tail rest) of     -- 58 -> :
           (_, "") -> accum -- no <key>:<value> pair (eg "name:gaga"), so ignore.
           (modKey, allModValue) ->
             let
-              modValue = T.tail allModValue
+              modValue = Bs.tail allModValue
             in
             case Mp.lookup modKey modelLoc of
               Nothing ->
@@ -263,16 +263,16 @@ consolidateLocales =
                     in
                     Mp.insert modelName updModLoc accum
 
-  updLocField :: Mp.Map T.Text (Mp.Map T.Text Locales) -> T.Text -> Po.LocEntry -> Mp.Map T.Text (Mp.Map T.Text Locales)
+  updLocField :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales) -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales)
   updLocField accum content aLocEntry =
-    case T.breakOn "," content of
+    case Bs.break (== 44) content of     -- 44 -> ,
       (_, "") -> accum
       (modelID, allFieldID) ->
         let
-          fieldID = T.tail allFieldID
+          fieldID = Bs.tail allFieldID
           modelMap = fromMaybe Mp.empty (Mp.lookup modelID accum)
         in
-        case T.breakOn ":" fieldID of
+        case Bs.break (== 58) fieldID of     -- 58 -> :
           (_, "") -> accum -- no fieldID, so ignore.
           (modKey, _) ->
             case Mp.lookup modKey modelMap of
@@ -289,20 +289,20 @@ consolidateLocales =
                 in
                 Mp.insert modelID newKeyMap accum
 
-  updLocHelp :: Mp.Map T.Text Locales -> T.Text -> Po.LocEntry -> Mp.Map T.Text Locales
+  updLocHelp :: Mp.Map Bs.ByteString Locales -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString Locales
   updLocHelp accum content aLocEntry = accum
 
-  updLocSelection :: Mp.Map T.Text (Mp.Map T.Text Locales) -> T.Text -> Po.LocEntry -> Mp.Map T.Text (Mp.Map T.Text Locales)
+  updLocSelection :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales) -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales)
   updLocSelection accum content aLocEntry = accum
 
-  updLocView :: Mp.Map T.Text Locales -> T.Text -> Po.LocEntry -> Mp.Map T.Text Locales
+  updLocView :: Mp.Map Bs.ByteString Locales -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString Locales
   updLocView accum content aLocEntry = accum
 
-  updLocWizardButton :: Mp.Map T.Text Locales -> T.Text -> Po.LocEntry -> Mp.Map T.Text Locales
+  updLocWizardButton :: Mp.Map Bs.ByteString Locales -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString Locales
   updLocWizardButton accum content aLocEntry = accum
 
 
-analyseMenuItems :: Maybe CompLocales -> Maybe [Tt.Definition] -> [Tt.MenuItem] -> [Menu]
+analyseMenuItems :: Maybe CompLocales -> Maybe [Tt.ModelElement] -> [Tt.MenuItem] -> [Menu]
 analyseMenuItems locales iconDefs =
   let
     menuLocales = case locales of
@@ -313,7 +313,7 @@ analyseMenuItems locales iconDefs =
   map (analyseMenuItem menuLocales iconMaps)
 
 
-buildIconDefMap :: Maybe [Tt.Definition] -> (Mp.Map T.Text (Mp.Map T.Text Tt.Field), Mp.Map T.Text T.Text)
+buildIconDefMap :: Maybe [Tt.ModelElement] -> (Mp.Map T.Text (Mp.Map T.Text Tt.Field), Mp.Map T.Text T.Text)
 buildIconDefMap mbDefs =
   case mbDefs of
     Nothing -> (Mp.empty, Mp.empty)
@@ -329,14 +329,14 @@ buildIconDefMap mbDefs =
       (iconMap, iconsByNameMap)
 
 
-analyseMenuItem :: Maybe (Mp.Map T.Text Locales) -> (Mp.Map T.Text (Mp.Map T.Text Tt.Field), Mp.Map T.Text T.Text) -> Tt.MenuItem -> Menu
+analyseMenuItem :: Maybe (Mp.Map Bs.ByteString Locales) -> (Mp.Map T.Text (Mp.Map T.Text Tt.Field), Mp.Map T.Text T.Text) -> Tt.MenuItem -> Menu
 analyseMenuItem locales (iconMap, iconsByNameMap) aMenuItem =
   let
     updLabel = case aMenuItem.nameMI of
       Nothing -> case locales of
         Nothing -> "anonymous"
         Just namedEntries ->
-          case Mp.lookup aMenuItem.idMI namedEntries of
+          case Mp.lookup (T.encodeUtf8 aMenuItem.idMI) namedEntries of
             Nothing -> "anonymous"
             Just aLocDef ->
               let
@@ -346,8 +346,8 @@ analyseMenuItem locales (iconMap, iconsByNameMap) aMenuItem =
                 "anonymous"
               else
                 case head values of
-                  (aKey, "") -> aKey
-                  (aKey, aValue) -> aValue
+                  (aKey, "") -> T.decodeUtf8 aKey
+                  (aKey, aValue) -> T.decodeUtf8 aValue
       Just aString -> aString
     derefIcon = case aMenuItem.iconMI of
       Nothing -> Nothing

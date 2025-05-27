@@ -1,27 +1,28 @@
 module Generation.EwTypes where
 
+import qualified Data.ByteString as Bs
 import qualified Data.Map.Strict as Mp
 import qualified Data.Text as T
 
 
-type Locales = Mp.Map T.Text T.Text
+type Locales = Mp.Map Bs.ByteString Bs.ByteString
 
 defaultLocales :: Locales
 defaultLocales = Mp.empty
 
-type ModelLocale = Mp.Map T.Text (Mp.Map T.Text (Mp.Map T.Text Locales))
+type ModelLocale = Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales))
 
 data CompLocales = CompLocales {
   -- models: <model-name> => <key>: name, desc, text, string => value => dict-key => dict-value
   modelCL :: ModelLocale
-  , fieldCL :: Mp.Map T.Text (Mp.Map T.Text Locales)
-  , helpCL :: Mp.Map T.Text Locales
-  , reportCL :: Mp.Map T.Text Locales
+  , fieldCL :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales)
+  , helpCL :: Mp.Map Bs.ByteString Locales
+  , reportCL :: Mp.Map Bs.ByteString Locales
   -- selections: appointment_type, state, urgency, visit_type, ...
-  , selectionCL :: Mp.Map T.Text (Mp.Map T.Text Locales)
-  , viewCL :: Mp.Map T.Text Locales
-  , wizardButtonCL :: Mp.Map T.Text Locales
-  , errors :: [T.Text]
+  , selectionCL :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales)
+  , viewCL :: Mp.Map Bs.ByteString Locales
+  , wizardButtonCL :: Mp.Map Bs.ByteString Locales
+  , errors :: [Bs.ByteString]
   }
   deriving Show
 
