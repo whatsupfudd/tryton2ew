@@ -4,6 +4,9 @@ import qualified Data.ByteString as Bs
 import qualified Data.Map.Strict as Mp
 import qualified Data.Text as T
 
+import qualified Parsing.Xml as Xm
+import qualified Parsing.Python as Py
+
 
 type Locales = Mp.Map Bs.ByteString Bs.ByteString
 
@@ -82,6 +85,7 @@ data Menu = Menu {
   , icon :: Maybe T.Text
   , mid :: T.Text
   , children :: [Menu]
+  , action :: Maybe T.Text
 }
 
 data AppEntry = AppEntry {
@@ -103,3 +107,29 @@ data ColumnDef = ColumnDef {
 }
 
 
+data IconDef = IconDef {
+  nameIc :: T.Text
+  , pathIc :: T.Text
+  }
+  deriving (Show, Eq)
+
+
+data ActionWindow = ActionWindow {
+  idAW :: T.Text
+  , logicNameAW :: T.Text
+  , domainAW :: Maybe T.Text
+  , contextAW :: Maybe T.Text
+  , optionsAW :: [AwDomain]
+  , viewLinksAW :: [(T.Text, Int)]  -- extracts from 'ir.action.act_window.view' => (ir.ui.view:name, sequence)
+  , viewModelLinksAW :: Mp.Map T.Text (T.Text, T.Text)  -- 'ir.ui.view' => (viewDef name, viewDef type)
+  , uiViewsAW :: Mp.Map T.Text Xm.Definition
+  }
+  deriving (Show)
+
+
+data AwDomain = AwDomain {
+  nameAD :: T.Text
+  , filterAD :: Maybe T.Text
+  , sequenceAD :: Int
+  }
+  deriving (Show)

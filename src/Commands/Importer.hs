@@ -1,5 +1,4 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE LambdaCase #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Use tuple-section" #-}
 {-# HLINT ignore "Use second" #-}
@@ -10,6 +9,7 @@ import Control.Monad               (forM, forM_, mapM)
 import Control.Exception           (try, SomeException)
 
 import qualified Data.ByteString as Bs
+import Data.Either (partitionEithers, rights)
 import qualified Data.List as L
 import qualified Data.Map.Strict as Mp
 import Data.Maybe (listToMaybe, maybeToList)
@@ -30,11 +30,11 @@ import Text.XML.Cursor (Cursor, attribute, child, content
 import qualified Options.Runtime as Rto
 import qualified Parsing.Python as Py
 import qualified Generation.Sql as Sq
-import qualified Parsing.Tryton as Tt
+import qualified Parsing.Xml as Xm
 import qualified Parsing.Pot as Po
 import qualified Generation.EwTypes as Ew
 import qualified Generation.EasyWordy as Ew
-import Data.Either (partitionEithers)
+import qualified Generation.Views as Vw
 
 
 data TargetFileKind =
@@ -50,7 +50,7 @@ data TargetFile = TargetFile {
   }
 
 
-type UiDefs = ([Tt.MenuItem], Mp.Map T.Text [Tt.ModelElement], Tt.ViewDefs)
+type UiDefs = ([Xm.MenuItem], Mp.Map T.Text [Xm.ClassInstance], Xm.ViewDefs)
 
 
 menuFinderCmd :: FilePath -> FilePath -> Rto.RunOptions -> IO ()
@@ -82,9 +82,9 @@ menuFinderCmd srcPath destPath rtOpts =
     putStrLn $ "nbr potFiles: " <> show (length potFiles)
     locales <- handlePotFiles potFiles destPath
     putStrLn $ "nbr pyFiles:  " <> show (length pyFiles)
-    dbDefs <- handlePyFiles pyFiles destPath
+    logicDefs <- handlePyFiles pyFiles destPath
     genStartTime <- getCurrentTime
-    rez <- Ew.generateApp destPath uiDefs locales dbDefs
+    rez <- Ew.generateApp destPath uiDefs locales logicDefs
     genEndTime <- getCurrentTime
     putStrLn $ "@[menuFinderCmd] time to generate: " <> show (diffUTCTime genEndTime genStartTime)
     pure ()
@@ -119,8 +119,8 @@ handleXmlFiles !files destPath = do
     case xmlDoc of
       Just aDoc ->
         let
-          items = Tt.extractMenuItems aDoc
-          (views, (fileName, dirPath, nameParts)) = Tt.extractDefinitions aFile aDoc
+          items = Xm.extractMenuItems aDoc
+          (views, (fileName, dirPath, nameParts)) = Xm.extractDefinitions aFile aDoc
         in do
         -- putStrLn $ "@[handleXmlFiles] fn: " <> fileName <> ", dir: " <> show dirPath <> ", nameParts: " <> show nameParts <> "\n   defs: " <> show views
         pure (items, (T.pack fileName, views))
@@ -129,20 +129,20 @@ handleXmlFiles !files destPath = do
   putStrLn $ "@[handleXmlFiles] time to load xml files: " <> show (diffUTCTime endItemsTime startItemsTime)
 
   let
-    !tree = Tt.buildTree $ concatMap fst mbItems
-  Tt.printTree tree 0 destPath
+    !tree = Xm.buildMenuTree $ concatMap fst mbItems
+  Xm.printMenuTree tree 0 destPath
   -- putStrLn "\n--------------------------------\n"
 
   !startDefsTime <- getCurrentTime
   let
-    (modelDefs, viewDefs) = Tt.processDefinitions $ map snd mbItems
+    (classInstances, viewDefs) = Xm.processDefinitions $ map snd mbItems
   -- putStrLn $ "@[handleXmlFiles] modelDefs: " <> show modelDefs
   -- putStrLn $ "@[handleXmlFiles] viewDefs: " <> show viewDefs
   !endDefsTime <- getCurrentTime
   putStrLn $ "@[handleXmlFiles] time to make viewDefs: " <> show (diffUTCTime endDefsTime startDefsTime)
-  Tt.printModelDefs modelDefs destPath
-  Tt.printViewErrs viewDefs destPath
-  pure (tree, modelDefs, viewDefs)
+  Xm.printClassInstances classInstances destPath
+  Xm.printViewErrs viewDefs destPath
+  pure (tree, classInstances, viewDefs)
 
 
 loadXmlFile :: FilePath -> IO (Maybe Document)
@@ -204,7 +204,7 @@ handlePotFiles files destPath = do
   pure reorgLocales
 
 
-handlePyFiles :: [FilePath] -> FilePath -> IO [Ew.TableDef]
+handlePyFiles :: [FilePath] -> FilePath -> IO [(FilePath, [Py.LogicElement])]
 handlePyFiles files destPath = do
   !startParseTime <- getCurrentTime
   !allElements <- forM files $ \aFile -> do
@@ -218,7 +218,7 @@ handlePyFiles files destPath = do
 
   !startGenTime <- getCurrentTime
   let
-    eiFileDefs = map (\(f, elements) -> (f, Sq.genTableDef elements)) allElements
+    eiClassDefs = map (\(f, elements) -> (f, Sq.genTableDef elements)) allElements
   TIO.writeFile (destPath </> "tableDefs.sql") . T.pack . L.intercalate "\n" $ map (\(f, eiTableDefs) ->
       let
         msgs = foldl(\accum td ->
@@ -228,7 +228,7 @@ handlePyFiles files destPath = do
           ) "" eiTableDefs
       in
       "@[handlePyFiles] " <> f <> if msgs == "" then "" else ":\n" <> msgs
-    ) eiFileDefs
+    ) eiClassDefs
   !endGenTime <- getCurrentTime
   putStrLn $ "@[handlePyFiles] time to process: " <> show (diffUTCTime endGenTime startGenTime)
-  pure []
+  pure allElements

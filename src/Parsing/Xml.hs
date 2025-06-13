@@ -1,6 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE LambdaCase #-}
-module Parsing.Tryton where
+module Parsing.Xml where
 
 import Control.Applicative         ((<|>))
 import Control.Monad               (forM, forM_, mapM)
@@ -50,7 +50,7 @@ data ViewDefs = ViewDefs {
 
 
 data Definition =
-  ModelDF ModelElement
+  ModelDF ClassInstance
   | TreeDF [Attribute] [TreeElement]
   | FormDF [Attribute] [FormElement]
   | ListFormDF [Attribute] [ToDoElement]
@@ -61,7 +61,7 @@ data Definition =
   deriving (Show)
 
 
-data ModelElement = ModelElement {
+data ClassInstance = ClassInstance {
     idDF     :: !T.Text
   , modelDF  :: !T.Text
   , fieldsDF :: !(Mp.Map T.Text Field)
@@ -147,7 +147,7 @@ extractMenuItems doc =
       }
 
 
-processDefinitions :: [(T.Text, [Definition])] -> (Mp.Map T.Text [ModelElement], ViewDefs)
+processDefinitions :: [(T.Text, [Definition])] -> (Mp.Map T.Text [ClassInstance], ViewDefs)
 processDefinitions allDefs =
   let
     (modelDefs, trees, forms, lists, graphs, boards, calendars, errors) =
@@ -216,7 +216,7 @@ extractDefinitions filePath doc =
                   (singleAttr "name" field, parseField field) | field <- c $/ element "field"
                 ]
     in
-    ModelDF $ ModelElement {
+    ModelDF $ ClassInstance {
       idDF = rid
       , modelDF = model
       , fieldsDF = fields
@@ -389,8 +389,8 @@ getContent !cursor =
     _ -> ""
 
 
-buildTree :: [MenuItem] -> [MenuItem]
-buildTree !items =
+buildMenuTree :: [MenuItem] -> [MenuItem]
+buildMenuTree !items =
   let
     !allIds = Set.fromList (map idMI items)
     !childrenMap = Mp.fromListWith (++) [ (p, [i]) | i <- items, p <- maybeToList i.parentMI ]
@@ -407,13 +407,13 @@ buildTree !items =
     in roots
 
 
-printTree :: [MenuItem] -> Int -> FilePath -> IO ()
-printTree !items !depth !destPath =
+printMenuTree :: [MenuItem] -> Int -> FilePath -> IO ()
+printMenuTree !items !depth !destPath =
   TIO.writeFile (destPath </> "tree.txt") . T.intercalate "\n" $
-    printTree' items depth
+    printMenuTree' items depth
   where
-  printTree' :: [MenuItem] -> Int -> [T.Text]
-  printTree' !items !depth =
+  printMenuTree' :: [MenuItem] -> Int -> [T.Text]
+  printMenuTree' !items !depth =
     let
       !offset = T.replicate (depth * 2) " "
     in
@@ -428,19 +428,18 @@ printTree !items !depth !destPath =
             0 -> label <> details
             _ -> offset <> label <> maybe "" (\i -> " [" <> i <> "]") icon
       in
-      prefix <> "\n" <> T.intercalate "\n" (printTree' i.childrenMI (depth + 1))
+      prefix <> "\n" <> T.intercalate "\n" (printMenuTree' i.childrenMI (depth + 1))
     ) items
 
 
-printModelDefs :: Mp.Map T.Text [ModelElement] -> FilePath -> IO ()
-printModelDefs defMap destPath =
-  TIO.writeFile (destPath </> "definitions.txt") . T.intercalate "\n" $
+printClassInstances :: Mp.Map T.Text [ClassInstance] -> FilePath -> IO ()
+printClassInstances defMap destPath =
+  TIO.writeFile (destPath </> "classInstances.txt") . T.intercalate "\n" $
     map (\(pathName, defs) ->
-        "-- path: " <> pathName <> " --\n"
+        "-- class: " <> pathName <> " --\n"
         <> T.intercalate "\n" (
           map (\modelEle ->
                   modelEle.idDF <> ":\n"
-                  <> "model: " <> modelEle.modelDF <> "\n"
                   <> T.intercalate "\n" (map (\(k,v) ->
                         "  - " <> k <> ": " <> showField v
                       ) (Mp.toList modelEle.fieldsDF))
@@ -495,5 +494,5 @@ printViewErrs viewDefs destPath =
 showField :: Field -> T.Text
 showField !f = case f.kindF of
   LabelFK -> f.valueF
-  EvalFK -> "#" <> f.valueF
-  ReferenceFK -> "@" <> f.valueF
+  EvalFK -> "#<" <> f.valueF <> ">"
+  ReferenceFK -> "@<" <> f.valueF <> ">"

@@ -6,6 +6,8 @@ import Data.Either (rights, lefts)
 import qualified Data.List as L
 
 import qualified Parsing.Python as Py
+import Generation.Utils (fieldNamed)
+
 
 data SqlTable = SqlTable {
     nameST :: !String
@@ -69,20 +71,24 @@ data SqlFieldParams =
   deriving (Show, Eq)
 
 
-genTableDef :: [Py.Element] -> [Either String SqlTable]
+genTableDef :: [Py.LogicElement] -> [Either String SqlTable]
 genTableDef elements =
   let
-    models = foldr (\element accum ->
+    sqlModels = foldr (\element accum ->
       case element of
-        Py.ModelEl model -> model : accum
+        Py.ModelEl model ->
+          case model.tClasses of
+            Py.SqlTC -> model : accum
+            Py.BothTC -> model : accum
+            _ -> accum
         _ -> accum
-      ) []elements
-    eiTableDefs = map parseModel models
+      ) [] elements
+    eiTableDefs = map parseModel sqlModels
   in
   eiTableDefs
 
 
-parseModel :: Py.Model -> Either String SqlTable
+parseModel :: Py.TrytonModel -> Either String SqlTable
 parseModel model =
   let
     mbNameF = L.find (fieldNamed "v:__name__") model.fields
@@ -294,8 +300,3 @@ buildColumn fieldName typeName fArgs =
                             , params = CommentPR (show restArgs), oriName = fieldName })
                 _ -> Left $ "@[extractFieldDefs] unexpected lambda arg expr: " <> show lExpr
             _ -> Left $ "@[extractFieldDefs] unexpected first arg: " <> show a
-
-
-fieldNamed :: String -> Py.Field -> Bool
-fieldNamed name field =
-  field.name == name

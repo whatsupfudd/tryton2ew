@@ -10,13 +10,13 @@ import Data.List (intercalate)
 import Data.Maybe (mapMaybe)
 
 
-data Element =
+data LogicElement =
   ClassEl String
-  | ModelEl Model
+  | ModelEl TrytonModel
   | AssignEl Assign
   deriving (Eq)
 
-instance Show Element where
+instance Show LogicElement where
   show e =
     case e of
       ModelEl m ->
@@ -31,13 +31,19 @@ instance Show Element where
         "Class: " <> c <> "\n"
 
 
-data Model = Model {
+data TrytonModel = TrytonModel {
   name :: String
   , superclasses :: [String]
+  , tClasses :: TargetClass
   , fields :: [Field]
   , body :: [Statement]
 } deriving (Show, Eq)
 
+data TargetClass =
+  SqlTC
+  | ViewTC
+  | BothTC
+  deriving (Show, Eq)
 
 data ClassStmt =
   FieldCS Assign
@@ -167,7 +173,7 @@ instance Show Argument where
         "an:" <>name <> "=" <> show expr
 
 
-extractElements :: FilePath -> IO [Element]
+extractElements :: FilePath -> IO [LogicElement]
 extractElements filePath = do
   content <- readFile filePath
   let
@@ -180,7 +186,7 @@ extractElements filePath = do
       pure $ analyzeStatements statements
 
 
-analyzeStatements :: forall annot. Show annot => [Pc.Statement annot] -> [Element]
+analyzeStatements :: forall annot. Show annot => [Pc.Statement annot] -> [LogicElement]
 analyzeStatements statements =
   let
     eiModels = map analyzeTopStmt statements
@@ -188,22 +194,27 @@ analyzeStatements statements =
   rights eiModels
 
 
-analyzeTopStmt :: forall annot. Show annot => Pc.Statement annot -> Either String Element
+analyzeTopStmt :: forall annot. Show annot => Pc.Statement annot -> Either String LogicElement
 analyzeTopStmt statement =
   case statement of
     Pc.Class { class_name = name, class_args = args, class_body = body } ->
       let
         superclasses = mapMaybe decodeArg args
+        isTarget = if "ModelSQL" `elem` superclasses then 1 else 0 + if "ModelView" `elem` superclasses then 2 else 0
       in
-      if "ModelSQL" `elem` superclasses then
+      if isTarget > 0 then
         let
           classStmts = mapMaybe analyzeClassStmt body
           fields = extractFields classStmts
           stmts = extractStmts classStmts
         in
-        Right . ModelEl $ Model {
+        Right . ModelEl $ TrytonModel {
               name = name.ident_string
             , superclasses = mapMaybe decodeArg args
+            , tClasses = case isTarget of
+                1 -> SqlTC
+                2 -> ViewTC
+                _ -> BothTC
             , fields = fields
             , body = stmts
           }

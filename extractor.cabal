@@ -36,6 +36,8 @@ library
       Generation.EwTypes
       Generation.Fuddle
       Generation.Sql
+      Generation.Utils
+      Generation.Views
       HttpSup.CorsPolicy
       MainLogic
       Options
@@ -45,6 +47,7 @@ library
       Parsing.Pot
       Parsing.Python
       Parsing.Tryton
+      Parsing.Xml
   other-modules:
       Paths_extractor
   hs-source-dirs:
