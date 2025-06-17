@@ -33,9 +33,11 @@ library
       DB.Connect
       DB.Opers
       Generation.EasyWordy
+      Generation.Elm
       Generation.EwTypes
       Generation.Fuddle
       Generation.Sql
+      Generation.Svg
       Generation.Utils
       Generation.Views
       HttpSup.CorsPolicy

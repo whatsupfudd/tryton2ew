@@ -3,11 +3,13 @@
 module Parsing.Python where
 
 import Data.Either (rights)
+import Data.List (intercalate)
+import Data.Maybe (mapMaybe)
+import qualified Data.Map as Mp
+import qualified Data.Text as T
 
 import qualified Language.Python.Version3.Parser as Pp
 import qualified Language.Python.Common as Pc
-import Data.List (intercalate)
-import Data.Maybe (mapMaybe)
 
 
 data LogicElement =
@@ -22,7 +24,7 @@ instance Show LogicElement where
       ModelEl m ->
         "Model: " <> m.name
           <> " (super: " <> intercalate ", " m.superclasses <> ")\n  "
-          <> intercalate "\n  " (map show m.fields)
+          <> intercalate "\n  " (map show (Mp.elems m.fields))
           <> "\n  " <> intercalate "\n  " (map show m.body)
           <> "\n"
       AssignEl a ->
@@ -35,7 +37,7 @@ data TrytonModel = TrytonModel {
   name :: String
   , superclasses :: [String]
   , tClasses :: TargetClass
-  , fields :: [Field]
+  , fields :: Mp.Map T.Text Field
   , body :: [Statement]
 } deriving (Show, Eq)
 
@@ -52,7 +54,7 @@ data ClassStmt =
 
 
 data Field = Field {
-    name :: String
+    name :: T.Text
     , value :: Expr
   }
   deriving (Show, Eq)
@@ -215,7 +217,7 @@ analyzeTopStmt statement =
                 1 -> SqlTC
                 2 -> ViewTC
                 _ -> BothTC
-            , fields = fields
+            , fields = Mp.fromList [ (f.name, f) | f <- fields ]
             , body = stmts
           }
       else
@@ -238,7 +240,7 @@ extractFields =
             else
               intercalate "." (map show assignEx.target)
         in
-        Field { name = fileName, value = assignEx.value } : accum
+        Field { name = T.pack fileName, value = assignEx.value } : accum
       StatementCS _ -> accum
   ) []
 

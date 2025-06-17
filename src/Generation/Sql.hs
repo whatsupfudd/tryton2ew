@@ -1,9 +1,11 @@
 module Generation.Sql where
 
 import qualified Data.Char as C
-import Data.Maybe (catMaybes)
 import Data.Either (rights, lefts)
 import qualified Data.List as L
+import Data.Maybe (catMaybes)
+import qualified Data.Map as Mp
+import qualified Data.Text as T
 
 import qualified Parsing.Python as Py
 import Generation.Utils (fieldNamed)
@@ -26,7 +28,7 @@ data SqlFieldDef = SqlFieldDef {
     nameSF :: !String
   , kindSF :: !SqlFieldKind
   , params :: !SqlFieldParams
-  , oriName :: !String
+  , oriName :: !T.Text
   }
   deriving (Eq)
 
@@ -98,7 +100,7 @@ parseModel model =
     Just aField ->
       if Py.isStringLiteral aField.value then
         let
-          eiFieldDefs = map trytonFieldToSql model.fields
+          eiFieldDefs = map trytonFieldToSql (Mp.elems model.fields)
           leftOvers = lefts eiFieldDefs
         in
         case leftOvers of
@@ -125,10 +127,10 @@ trytonFieldToSql field =
               Right $ Just fieldDef
         Py.MapEx exprs ->
           Right Nothing
-        _ -> Left $ "@[trytonFieldToSql] field " <> field.name <> " is not a call, value: " <> show field.value
+        _ -> Left $ "@[trytonFieldToSql] field " <> T.unpack field.name <> " is not a call, value: " <> show field.value
 
 
-extractFieldDefs :: String -> Py.Expr -> [Py.Argument] -> Either String SqlFieldDef
+extractFieldDefs :: T.Text -> Py.Expr -> [Py.Argument] -> Either String SqlFieldDef
 extractFieldDefs fieldName expr fArgs =
   case expr of
     Py.DotEx sExpr label ->
@@ -148,7 +150,7 @@ extractFieldDefs fieldName expr fArgs =
     _ -> Left $ "@[extractFieldDefs] expr is not a call: " <> show expr
 
 
-trytonTypeToSql :: String -> String -> [Py.Argument] -> Either String SqlFieldDef
+trytonTypeToSql :: T.Text -> String -> [Py.Argument] -> Either String SqlFieldDef
 trytonTypeToSql fieldName label fArgs =
   case label of
     "Selection" -> tmpBuildType fieldName label fArgs
@@ -163,7 +165,7 @@ trytonTypeToSql fieldName label fArgs =
     "Dict" -> tmpBuildType fieldName label fArgs
     _ -> buildColumn fieldName label fArgs
 
-tmpBuildType :: String -> String -> [Py.Argument] -> Either String SqlFieldDef
+tmpBuildType :: T.Text -> String -> [Py.Argument] -> Either String SqlFieldDef
 tmpBuildType fieldName label fArgs =
   Right (SqlFieldDef { nameSF = "TMP:" <>label, kindSF = CommentSFK (show fArgs), params = NonePR, oriName = fieldName })
 
@@ -180,7 +182,7 @@ buildSelection fArgs =
   Left "@[buildSelection] unimplemented."
 
 
-buildMany2One :: String -> [Py.Argument] -> Either String SqlFieldDef
+buildMany2One :: T.Text -> [Py.Argument] -> Either String SqlFieldDef
 buildMany2One fieldName fArgs =
   case fArgs of
     [] -> Left "@[buildMany2One] no arg."
@@ -235,7 +237,7 @@ Tryton defines the following fields types:
   Dict
 -}
 
-buildColumn :: String -> String -> [Py.Argument] -> Either String SqlFieldDef
+buildColumn :: T.Text -> String -> [Py.Argument] -> Either String SqlFieldDef
 buildColumn fieldName typeName fArgs =
   let
     fieldType = case typeName of

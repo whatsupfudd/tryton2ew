@@ -1,8 +1,10 @@
 module Generation.Utils where
 
+import qualified Data.Text as T
+
 import qualified Parsing.Python as Py
 
 
-fieldNamed :: String -> Py.Field -> Bool
+fieldNamed :: T.Text -> Py.Field -> Bool
 fieldNamed name field =
   field.name == name

@@ -34,7 +34,6 @@ import qualified Parsing.Xml as Xm
 import qualified Parsing.Pot as Po
 import qualified Generation.EwTypes as Ew
 import qualified Generation.EasyWordy as Ew
-import qualified Generation.Views as Vw
 
 
 data TargetFileKind =

@@ -6,7 +6,7 @@ import qualified Data.Text as T
 
 import qualified Parsing.Xml as Xm
 import qualified Parsing.Python as Py
-
+import qualified Generation.Elm as E
 
 type Locales = Mp.Map Bs.ByteString Bs.ByteString
 
@@ -53,30 +53,9 @@ data Component = Component {
   path :: FilePath
   , moduleName :: T.Text
   , refID :: T.Text
-  , types :: [TypeDef]
-  , functions :: [FunctionDef]
+  , types :: [E.TypeDef]
+  , functions :: [E.FunctionDef]
   , locales :: Mp.Map T.Text Locales    -- keyword -> values per locale (en, fr, etc.)
-}
-
-data TypeDef = TypeDef {
-  name :: T.Text
-  , fields :: [FieldDef]
-}
-
-data FieldDef = FieldDef {
-  name :: T.Text
-  , typing :: TypeDef
-}
-
-data FunctionDef = FunctionDef {
-  name :: T.Text
-  , parameters :: [ParameterDef]
-  , returnType :: TypeDef
-}
-
-data ParameterDef = ParameterDef {
-  name :: T.Text
-  , typing :: TypeDef
 }
 
 
@@ -91,19 +70,6 @@ data Menu = Menu {
 data AppEntry = AppEntry {
   endpoint :: T.Text
   , dynLabel :: T.Text
-}
-
-
-data TableDef = TableDef {
-  name :: T.Text
-  , comment :: Maybe T.Text
-  , columns :: [ColumnDef]
-}
-
-data ColumnDef = ColumnDef {
-  name :: T.Text
-  , typing :: TypeDef
-  , comment :: Maybe T.Text
 }
 
 
@@ -123,6 +89,7 @@ data ActionWindow = ActionWindow {
   , viewLinksAW :: [(T.Text, Int)]  -- extracts from 'ir.action.act_window.view' => (ir.ui.view:name, sequence)
   , viewModelLinksAW :: Mp.Map T.Text (T.Text, T.Text)  -- 'ir.ui.view' => (viewDef name, viewDef type)
   , uiViewsAW :: Mp.Map T.Text Xm.Definition
+  , logicView :: Maybe Py.TrytonModel
   }
   deriving (Show)
 

@@ -20,6 +20,7 @@ import System.FilePath ((</>))
 import qualified Parsing.Xml as Xm
 import qualified Parsing.Pot as Po
 import qualified Parsing.Python as Pp
+import qualified Generation.Elm as E
 import qualified Generation.Views as Vw
 import Generation.EwTypes
 
@@ -48,7 +49,7 @@ Need to generate:
 
 
 generateApp :: FilePath -> UiDefs -> Po.LocaleDefs -> [(FilePath, [Pp.LogicElement])] -> IO (Either String ())
-generateApp destPath uiDefs@(_, classInstances, viewDefs) locales htmlViews =
+generateApp destPath uiDefs@(_, classInstances, viewDefs) locales logicElements =
   let
     consoLocales = consolidateLocales locales
     eiLeftMenuNav = genLeftMenu uiDefs consoLocales
@@ -58,11 +59,18 @@ generateApp destPath uiDefs@(_, classInstances, viewDefs) locales htmlViews =
       pure $ Left err
     Right menus -> do
       let
-        viewMappings = makeViewRecordMap
-        actionsMappings = makeActionsRecordMap
-        actWins = scanInstances (concat $ Mp.elems classInstances)
-        htmlViewMap = Mp.fromList [ (aView.nameHV, aView) | (_, logicElements) <- htmlViews, aView <- (rights . Vw.genViewDef) logicElements ]
-        components = genComponents viewMappings actionsMappings viewDefs menus consoLocales htmlViewMap
+        logicMap = foldl (\accum anElement ->
+            case anElement of
+              Pp.ModelEl trytonModel ->
+                case Mp.lookup "v:__name__" trytonModel.fields of
+                  Just aName -> case aName.value of
+                    Pp.LiteralEx (Pp.StringLit str) -> Mp.insert ((T.drop 1 . T.init . T.pack) (concat str)) trytonModel accum
+                    _ -> accum
+                  Nothing -> accum
+              _ -> accum
+          ) Mp.empty (concatMap snd logicElements)
+        (actionWindows, icons, errs) = scanInstances logicMap viewDefs (concat $ Mp.elems classInstances)
+        components = genComponents actionWindows viewDefs menus consoLocales
         dynRoutes = genDynRoutes components
         yamlEntries = genFunctionDefs components
         context = EwContext {
@@ -71,30 +79,16 @@ generateApp destPath uiDefs@(_, classInstances, viewDefs) locales htmlViews =
           , appEntries = []
         }
         renderedMenus = leftPartAItems menus
-      TIO.writeFile (destPath </> "actWins.txt") $ T.pack (show actWins)
+      TIO.writeFile (destPath </> "actWins.txt") $
+        -- T.intercalate "\n" (map (T.pack . show) (Mp.toList logicMap))
+        T.intercalate "\n" (map (T.pack . show) (Mp.elems actionWindows))
+        <> "\n\n" <> T.intercalate "\n" (map T.pack errs)
       TIO.writeFile (destPath </> "wapp/Protected/LeftMenuNav.elm") (T.decodeUtf8 renderedMenus)
       TIO.writeFile (destPath </> "wapp/DynRoutes.elm") (T.decodeUtf8 dynRoutes)
       TIO.writeFile (destPath </> "yamlEntries.txt") $ T.decodeUtf8 yamlEntries
       TIO.writeFile (destPath </> "compLocales.txt") $ T.pack (show consoLocales)
       mapM_ (saveComponent destPath) components
       pure $ Right ()
-  where
-    --          Mp.fromList [ (aModel.idDF, aModel) | aModel <- fromMaybe [] $ Mp.lookup "ir.ui.view" modelDefs,  ]
-  makeViewRecordMap :: Mp.Map T.Text Xm.ClassInstance
-  makeViewRecordMap =
-    case Mp.lookup "ir.ui.view" classInstances of
-      Nothing -> Mp.empty
-      Just viewModels -> Mp.fromList $
-        foldl (\accum aModel ->
-          case Mp.lookup "name" aModel.fieldsDF of
-            Nothing -> accum
-            Just nameField -> (nameField.valueF, aModel) : accum
-          ) [] viewModels
-  makeActionsRecordMap :: Mp.Map T.Text Xm.ClassInstance
-  makeActionsRecordMap =
-    case Mp.lookup "ir.action.act_window" classInstances of
-      Nothing -> Mp.empty
-      Just viewModels -> Mp.fromList [ (aModel.idDF, aModel) | aModel <- viewModels ]
 
 
 data Pass1Accum = Pass1Accum {
@@ -107,22 +101,24 @@ data Pass1Accum = Pass1Accum {
   deriving (Show)
 
 
-scanInstances :: [Xm.ClassInstance] -> (Pass1Accum, Mp.Map T.Text ActionWindow, Mp.Map T.Text IconDef, [String])
-scanInstances instances =
+scanInstances :: Mp.Map T.Text Pp.TrytonModel -> Xm.ViewDefs -> [Xm.ClassInstance] -> (Mp.Map T.Text ActionWindow, Mp.Map T.Text IconDef, [String])
+scanInstances logicMap viewDefs instances =
   let
     (p1Accum, p1Errs) = scanInstancePass1 instances
     (actWinMapByID, p2Errs) = scanInstancesPass2 p1Accum
     actWinMapByLogicName = Mp.fromList [ (aActWin.logicNameAW, aActWin) | aActWin <- Mp.elems actWinMapByID ]
     (updMap, p3Errs) = scanInstancesPass3 actWinMapByLogicName p1Accum.irUiViewP1
+    (finalMap, p4Errs) = scanInstancesPass4 logicMap viewDefs updMap
   in
   {-
   case p1Errs <> p2Errs <> p3Errs of
     [] -> Right (Mp.fromList [ (aActWin.idAW, aActWin) | aActWin <- Mp.elems updMap ], p1Accum.iconsP1)
     errs -> Left $ "@[scanInstances] errs: " <> show errs
   -}
-  (p1Accum, Mp.fromList [ (aActWin.idAW, aActWin) | aActWin <- Mp.elems updMap ], p1Accum.iconsP1, p1Errs <> p2Errs <> p3Errs)
+  (Mp.fromList [ (aActWin.idAW, aActWin) | aActWin <- Mp.elems finalMap ], p1Accum.iconsP1, p1Errs <> p2Errs <> p3Errs <> p4Errs)
 
 
+-- Transforms ClassInstances into ActionWIndows and Icons.
 scanInstancePass1 :: [Xm.ClassInstance] -> (Pass1Accum, [String])
 scanInstancePass1 classInstances =
   let
@@ -140,6 +136,7 @@ scanInstancePass1 classInstances =
     ) (initAccum, []) classInstances
 
 
+-- Connects the act_window.domains and act_window.views to the ActionWindows.
 scanInstancesPass2 :: Pass1Accum -> (Mp.Map T.Text ActionWindow, [String])
 scanInstancesPass2 p1Accum =
   let
@@ -186,80 +183,56 @@ scanInstancesPass2 p1Accum =
               Nothing ->
                 case Mp.lookup actWinField.valueF p1Accum.actWindowsP1 of
                   Just actWin ->
-                    case Mp.lookup "view" aView.fieldsDF of
-                      Nothing ->
-                        let
-                          newErr = "No view field in act_window.view: " <> show aView
-                        in
-                        (accum, newErr : errs)
-                      Just viewField ->
-                        case viewField.kindF of
-                          Xm.ReferenceFK ->
-                            let
-                              newViewValue = 
-                                case Mp.lookup "sequence" aView.fieldsDF of
-                                  Nothing -> Right (viewField.valueF, 0)
-                                  Just sequenceField ->
-                                    case sequenceField.kindF of
-                                      Xm.EvalFK -> Right (viewField.valueF, read $ T.unpack sequenceField.valueF)
-                                      _ -> Left $ "Unexpected sequence format in act_window.view: " <> show aView
-                            in
-                            case newViewValue of
-                              Left err -> (accum, err : errs)
-                              Right aPair ->
-                                let
-                                  newActWin = actWin { viewLinksAW = aPair : actWin.viewLinksAW }
-                                in
-                                (Mp.insert actWinField.valueF newActWin accum, errs)
-                          _ -> 
-                            let
-                              newErr = "Unexpected view format in act_window.view: " <> show aView
-                            in
-                            (accum, newErr : errs)
+                    makeValue (accum, errs) actWin actWinField aView
                   Nothing ->
                     let
                       newErr = "No ActionWindow for act_window.view: " <> show aView
                     in
                     (accum, newErr : errs)
               Just actWin ->
-                case Mp.lookup "view" aView.fieldsDF of
-                  Nothing ->
-                    let
-                      newErr = "No view field in act_window.view: " <> show aView
-                    in
-                    (accum, newErr : errs)
-                  Just viewField ->
-                    case viewField.kindF of
-                      Xm.ReferenceFK ->
-                        let
-                          newViewValue = 
-                            case Mp.lookup "sequence" aView.fieldsDF of
-                              Nothing -> Right (viewField.valueF, 0)
-                              Just sequenceField ->
-                                case sequenceField.kindF of
-                                  Xm.EvalFK -> Right (viewField.valueF, read $ T.unpack sequenceField.valueF)
-                                  _ -> Left $ "Unexpected sequence format in act_window.view: " <> show aView
-                        in
-                        case newViewValue of
-                          Left err -> (accum, err : errs)
-                          Right aPair ->
-                            let
-                              newActWin = actWin { viewLinksAW = aPair : actWin.viewLinksAW }
-                            in
-                            (Mp.insert actWinField.valueF newActWin accum, errs)
-                      _ -> 
-                        let
-                          newErr = "Unexpected view format in act_window.view: " <> show aView
-                        in
-                        (accum, newErr : errs)
+                makeValue (accum, errs) actWin actWinField aView
             _ ->
               let
                 newErr = "Unexpected act_window reference format: " <> show actWinField
               in
               (accum, newErr : errs)
     ) domainConso p1Accum.actViewsP1
+  where
+  makeValue :: (Mp.Map T.Text ActionWindow, [String]) -> ActionWindow -> Xm.Field -> Xm.ClassInstance -> (Mp.Map T.Text ActionWindow, [String])
+  makeValue (accum, errs) actWin actWinField aView =
+    case Mp.lookup "view" aView.fieldsDF of
+      Nothing ->
+        let
+          newErr = "No view field in act_window.view: " <> show aView
+        in
+        (accum, newErr : errs)
+      Just viewField ->
+        case viewField.kindF of
+          Xm.ReferenceFK ->
+            let
+              newViewValue =
+                case Mp.lookup "sequence" aView.fieldsDF of
+                  Nothing -> Right (viewField.valueF, 0)
+                  Just sequenceField ->
+                    case sequenceField.kindF of
+                      Xm.EvalFK -> Right (viewField.valueF, read $ T.unpack sequenceField.valueF)
+                      _ -> Left $ "Unexpected sequence format in act_window.view: " <> show aView
+            in
+            case newViewValue of
+              Left err -> (accum, err : errs)
+              Right aPair ->
+                let
+                  newActWin = actWin { viewLinksAW = aPair : actWin.viewLinksAW }
+                in
+                (Mp.insert actWinField.valueF newActWin accum, errs)
+          _ ->
+            let
+              newErr = "Unexpected view format in act_window.view: " <> show aView
+            in
+            (accum, newErr : errs)
 
 
+-- Connects the ir.ui.views to the ActionWindows (based on the act_win.views relationships).
 scanInstancesPass3 :: Mp.Map T.Text ActionWindow -> [Xm.ClassInstance] -> (Mp.Map T.Text ActionWindow, [String])
 scanInstancesPass3 actWinMap =
   foldl (\(accum, errs) aUiView ->
@@ -309,6 +282,49 @@ scanInstancesPass3 actWinMap =
                           (accum, newErr : errs)
         _ -> (accum, "Unexpected name format in instance: " <> show aUiView : errs)
   ) (actWinMap, [])
+
+
+-- Connects the ModelViews (python) and view definitions (../views/*.xml) to the ActionWindows (based on the ir.ui.view relationships extracted in pass 3)
+scanInstancesPass4 :: Mp.Map T.Text Pp.TrytonModel -> Xm.ViewDefs -> Mp.Map T.Text ActionWindow -> (Mp.Map T.Text ActionWindow, [String])
+scanInstancesPass4 logicMap viewDefs actWinMap =
+  let
+    (updActWinMap, errs) = foldl (\(accum, errs) (k, anActWin) ->
+        let
+          mbTtModel = Mp.lookup anActWin.logicNameAW logicMap
+          (uiViews, viewErrs) = foldl (\(accum, errs) (vName, vType) ->
+              let
+                mbViewDef = case vType of
+                  "tree" -> uncurry Xm.TreeDF <$> Mp.lookup vName viewDefs.trees
+                  "form" -> uncurry Xm.FormDF <$> Mp.lookup vName viewDefs.forms
+                  -- TODO: other kinds of views.
+                  _ -> Nothing
+              in
+              case mbViewDef of
+                Nothing ->
+                  let
+                    errMsg = "No viewDef for: " <> T.unpack vName
+                  in
+                  (accum, errMsg : errs)
+                Just viewDef -> ((vName, viewDef) : accum, errs)
+
+            ) ([], []) anActWin.viewModelLinksAW
+        in
+        case (mbTtModel, uiViews) of
+          (Nothing, []) -> (accum, "No logic nor ui.views for: " <> T.unpack k : errs)
+          (Just ttModel, []) ->
+            let
+              newErr = "No ui.view for: " <> T.unpack k
+              newActWin = anActWin { logicView = Just ttModel }
+            in
+              (Mp.insert k newActWin accum, newErr : errs)
+          (mbTtModel, uiViews) ->
+            let
+              newActWin = anActWin { logicView = mbTtModel, uiViewsAW = Mp.fromList uiViews }
+            in
+            (Mp.insert k newActWin accum, errs)
+      ) (Mp.empty, []) (Mp.toList actWinMap)
+  in
+  (updActWinMap, errs)
 
 
 instanceToDomain :: Xm.ClassInstance -> Either String AwDomain
@@ -367,6 +383,7 @@ parseClassInstance accum aModel
                           , viewLinksAW = []
                           , viewModelLinksAW = Mp.empty
                           , uiViewsAW = Mp.empty
+                          , logicView = Nothing
                         }
                       in
                       Right accum { actWindowsP1 = Mp.insert aModel.idDF newActWin accum.actWindowsP1 }
@@ -484,41 +501,74 @@ genLeftMenu (menuItems, modelDefs, _) locales =
   Right menus
 
 
-genComponents :: Mp.Map T.Text Xm.ClassInstance -> Mp.Map T.Text Xm.ClassInstance -> Xm.ViewDefs -> [Menu] -> Mp.Map Bs.ByteString CompLocales -> Mp.Map String Vw.HtmlView -> [Component]
-genComponents viewMappings actionsMappings viewDefs leftMenus locales htmlViews =
+genComponents :: Mp.Map T.Text ActionWindow -> Xm.ViewDefs -> [Menu] -> Mp.Map Bs.ByteString CompLocales -> [Component]
+genComponents actionWindows viewDefs leftMenus locales =
   concatMap (\aMenu ->
       let
         componentName = convertMenuID aMenu.mid
-        compModel = Mp.lookup aMenu.mid viewMappings
-        mbModelView = resolveAction aMenu.action htmlViews
+        mbActionWindow = case aMenu.action of
+          Nothing -> Nothing
+          Just actionID -> Mp.lookup actionID actionWindows
         fileName = "wapp/Components/" <> T.unpack componentName <> ".elm"
         topComp = Component {
               path = fileName
             , moduleName = componentName
             , refID = aMenu.mid
             , types = []
-            , functions = []
+            , functions = genFunction mbActionWindow
             , locales = Mp.empty  -- Fix this.
           }
-        childrenComponents = genComponents viewMappings actionsMappings viewDefs aMenu.children locales htmlViews
+        childrenComponents = genComponents actionWindows viewDefs aMenu.children locales
       in
       topComp : childrenComponents
     ) leftMenus
-  where
-  resolveView :: Xm.ClassInstance -> Xm.ViewDefs -> Maybe Xm.Definition
-  resolveView aModel viewDefs = Nothing
 
-  resolveAction :: Maybe T.Text -> Mp.Map String Vw.HtmlView -> Maybe Vw.HtmlView
-  resolveAction mbModelName htmlViews =
-    case mbModelName of
-      Nothing -> Nothing
-      Just actionID -> case Mp.lookup actionID actionsMappings of
-        Nothing -> Nothing
-        Just actionModel -> case Mp.lookup "res_model" actionModel.fieldsDF of
-          Nothing -> Nothing
-          Just aField -> case aField.kindF of
-            Xm.LabelFK -> maybe Nothing Just (Mp.lookup (T.unpack aField.valueF) htmlViews)
-            _ -> Nothing
+
+genFunction :: Maybe ActionWindow -> [E.FunctionDef]
+genFunction mbActionWin =
+  case mbActionWin of
+    Nothing ->
+      [
+        E.FunctionDef {
+          nameFD = "demoFct"
+          , argsFD = []
+          , typeDef = E.StringTD
+          , bodyFD =
+              E.section [ E.class_ "bg-gray-50 dark:bg-gray-900 p-3 sm:p-5 md:ml-64 lg:mr-16 min-h-full pt-20" ] [
+                E.div [E.class_ "text-red-500" ] [ E.text "No action window." ]
+              ]
+        }
+      ]
+    Just actionWin ->
+      let
+        subFcts = foldl (\accum (vName, viewDef) ->
+            case viewDef of
+          Xm.TreeDF attribs elements ->
+            Vw.genTree vName elements : accum
+          Xm.FormDF {} ->
+            accum
+          ) [] (Mp.toList actionWin.uiViewsAW)
+      in
+      [
+        E.FunctionDef {
+          nameFD = "demoFct"
+          , argsFD = []
+          , typeDef = E.StringTD
+          , bodyFD = E.div [E.class_ "bg-gray-50 dark:bg-gray-900 p-4 md:ml-64 lg:mr-16 min-h-full pt-20" ] $ case subFcts of
+              [] -> [ E.div [E.class_ "text-red-500" ] [ E.text actionWin.logicNameAW ] ]
+              _ -> [
+                E.div [ E.class_ "mx-auto max-w-screen-xl px-4 lg:px-12" ]
+                  ([ E.div [ E.class_ "flex justify-between items-center mb-4" ]
+                    [ E.h1 [ E.class_ "text-2xl text-gray-900 dark:text-white font-bold" ] [ E.text actionWin.logicNameAW ]
+                    , E.div [ E.class_ "flex items-center" ]
+                      [ E.button [ E.class_ "bg-gray-500 text-white px-4 py-2 rounded-md" ] [ E.text "Refresh" ] ]
+                    ]
+                  ]
+                  <> [ E.ApplyEE aFct.nameFD [] | aFct <- subFcts ]
+                  )
+                ]
+        }    
+      ] <> subFcts
 
 
 genSqlCode :: [Xm.Definition] -> IO (Either String ())
@@ -554,6 +604,7 @@ import Dict as D
 import Tuple as T
 
 import Html.String exposing (..)
+import Html.String as H
 import Html.String.Attributes exposing (..)
 import Sup.Svg as S
 import Sup.Attributes as Sa
@@ -599,12 +650,16 @@ default _ jsonParams =
   -}
   Forward [ demoFct ]
 
+|]
+{-
 demoFct =
-  div [ class "bg-gray-50 dark:bg-gray-900 p-4 md:ml-64 lg:mr-16 min-h-full pt-20" ] [ div [ class "text-red-500" ] [ text "|]
+  div [ class "bg-gray-50 dark:bg-gray-900 p-4 md:ml-64 lg:mr-16 min-h-full pt-20" ] [ div [ class "text-red-500" ] [ text "
+-}
   in
   "module Components." <> T.encodeUtf8 component.moduleName
   <> templ_1
-  <> T.encodeUtf8 component.moduleName <> "\" ]]\n"
+  <> Bs.intercalate "\n" (map E.spitFct component.functions)
+ -- <> T.encodeUtf8 component.moduleName <> "\" ]]\n"
 
 consolidateLocales :: Po.LocaleDefs -> Mp.Map Bs.ByteString CompLocales
 consolidateLocales =
