@@ -5,10 +5,8 @@ import Data.Text (Text)
 
 
 
-data RunOptions = RunOptions {
+newtype RunOptions = RunOptions {
     debug :: Int
-    -- HERE: Add additional vars for providing runtime parameters:
-    -- Eg: , root :: Text
   }
   deriving (Show)
 

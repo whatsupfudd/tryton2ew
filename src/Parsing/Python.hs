@@ -2,11 +2,13 @@
 -- RankNTypes enables the 'forall', which in turns qualifies the 'annot' type variable to be a class of 'Show'.
 module Parsing.Python where
 
+import qualified Data.ByteString as Bs
 import Data.Either (rights)
 import Data.List (intercalate)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map as Mp
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 
 import qualified Language.Python.Version3.Parser as Pp
 import qualified Language.Python.Common as Pc
@@ -54,14 +56,14 @@ data ClassStmt =
 
 
 data Field = Field {
-    name :: T.Text
+    name :: Bs.ByteString
     , value :: Expr
   }
   deriving (Show, Eq)
 
 
 data Statement =
-  Comment [String]
+  Comment [Bs.ByteString]
   | Other Expr
   deriving (Eq)
 
@@ -69,7 +71,7 @@ instance Show Statement where
   show stmt =
     case stmt of
       Comment strs ->
-        "Comment: " <> intercalate "\n" strs
+        "Comment: " <> (T.unpack . T.decodeUtf8) (Bs.intercalate "\n" strs)
       Other expr ->
         "Other: " <> show expr
 
@@ -80,27 +82,27 @@ data Assign = Assign {
 } deriving (Show, Eq)
 
 data Expr =
-  VarEx String
+  VarEx Bs.ByteString
   | LiteralEx Literal
   | CallEx Expr [Argument]
   | LambdaEx Expr
   | ArrayEx [Expr]
   | MapEx [Expr]
   | ParenEx Expr
-  | BinOpEx String Expr Expr
-  | UniOpEx String Expr
-  | DotEx Expr String
+  | BinOpEx Bs.ByteString Expr Expr
+  | UniOpEx Bs.ByteString Expr
+  | DotEx Expr Bs.ByteString
   | TupleEx [Expr]
   | CondEx Expr Expr Expr
   | DictEx Expr Expr
-  | ShownEx String
+  | ShownEx Bs.ByteString
   deriving (Eq)
 
 instance Show Expr where
   show expr =
     case expr of
       VarEx s ->
-        "v:" <> s
+        "v:" <> (T.unpack . T.decodeUtf8) s
       LiteralEx lit ->
         "lt:" <> show lit
       CallEx func args ->
@@ -114,11 +116,11 @@ instance Show Expr where
       ParenEx expr ->
         "p:(" <> show expr <> ")"
       BinOpEx op left right ->
-        "b:" <> show left <> " " <> show op <> " " <> show right
+        "b:" <> show left <> " " <> (T.unpack . T.decodeUtf8) op <> " " <> show right
       UniOpEx op expr ->
-        "u:" <> show op <> " " <> show expr
+        "u:" <> (T.unpack . T.decodeUtf8) op <> " " <> show expr
       DotEx expr attr ->
-        "d:" <> show expr <> "." <> attr
+        "d:" <> show expr <> "." <> (T.unpack . T.decodeUtf8) attr
       TupleEx exprs ->
         "t:[" <> intercalate ", " (map show exprs) <> "]"
       CondEx cond trueBranch falseBranch ->
@@ -126,14 +128,14 @@ instance Show Expr where
       DictEx key datum ->
         "dict:(" <> show key <> " => " <> show datum <> ")"
       ShownEx s ->
-        "s:" <> s
+        "s:" <> (T.unpack . T.decodeUtf8) s
 
 
 data Literal =
   IntLit Integer
   | LIntLit Integer
   | FloatLit Double
-  | StringLit [String]
+  | StringLit [Bs.ByteString]
   | BoolLit Bool
   | NoneLit
   | EllipsisLit
@@ -149,7 +151,7 @@ instance Show Literal where
       FloatLit f ->
         show f
       StringLit strs ->
-        intercalate "++" strs
+        (T.unpack . T.decodeUtf8) $ Bs.intercalate "++" strs
       BoolLit b ->
         show b
       NoneLit ->
@@ -159,20 +161,20 @@ instance Show Literal where
 
 
 data Argument =
-  VarArg String
+  VarArg Bs.ByteString
   | LambdaArg Expr
-  | NamedArg String Expr
+  | NamedArg Bs.ByteString Expr
   deriving (Eq)
 
 instance Show Argument where
   show arg =
     case arg of
       VarArg s ->
-        "av:" <> s
+        "av:" <> (T.unpack . T.decodeUtf8) s
       LambdaArg expr ->
         "al: " <> show expr
       NamedArg name expr ->
-        "an:" <>name <> "=" <> show expr
+        "an:" <> (T.unpack . T.decodeUtf8) name <> "=" <> show expr
 
 
 extractElements :: FilePath -> IO [LogicElement]
@@ -217,7 +219,7 @@ analyzeTopStmt statement =
                 1 -> SqlTC
                 2 -> ViewTC
                 _ -> BothTC
-            , fields = Mp.fromList [ (f.name, f) | f <- fields ]
+            , fields = Mp.fromList [ (T.decodeUtf8 f.name, f) | f <- fields ]
             , body = stmts
           }
       else
@@ -236,11 +238,11 @@ extractFields =
         let
           fileName =
             if all isStringLiteral assignEx.target then
-              intercalate "." (concatMap extractStringLiteral assignEx.target)
+              Bs.intercalate "." (concatMap extractStringLiteral assignEx.target)
             else
-              intercalate "." (map show assignEx.target)
+              Bs.intercalate "." (map bsShowExpr assignEx.target)
         in
-        Field { name = T.pack fileName, value = assignEx.value } : accum
+        Field { name = fileName, value = assignEx.value } : accum
       StatementCS _ -> accum
   ) []
 
@@ -301,15 +303,14 @@ isStringLiteral :: Expr -> Bool
 isStringLiteral (LiteralEx (StringLit _)) = True
 isStringLiteral _ = False
 
-extractStringLiteral :: Expr -> [String]
+extractStringLiteral :: Expr -> [Bs.ByteString]
 extractStringLiteral expr =
   case expr of
     LiteralEx (StringLit strings) -> map removeQuotes strings
     _ -> []
 
-removeQuotes :: String -> String
-removeQuotes =
-  dropWhile (== '\'') . reverse . dropWhile (== '\'') . reverse
+removeQuotes :: Bs.ByteString -> Bs.ByteString
+removeQuotes = Bs.dropWhileEnd (== 39) . Bs.dropWhile (== 39)
 
 {-
 The AST defines the expressions as:
@@ -396,7 +397,7 @@ evalExpr :: forall annot. Show annot => Pc.Expr annot -> Expr
 evalExpr expr =
   case expr of
     Pc.Var ident annot ->
-      VarEx ident.ident_string
+      VarEx $ (T.encodeUtf8 . T.pack) ident.ident_string
     Pc.Int value literal annot ->
       LiteralEx $ IntLit value
     Pc.LongInt value literal annot ->
@@ -412,17 +413,17 @@ evalExpr expr =
     Pc.Ellipsis annot ->
       LiteralEx EllipsisLit
     Pc.ByteStrings strings annot ->
-      LiteralEx $ StringLit strings
+      LiteralEx $ StringLit $ map (T.encodeUtf8 . T.pack) strings
     Pc.Strings strings annot ->
-      LiteralEx $ StringLit strings
+      LiteralEx $ StringLit $ map (T.encodeUtf8 . T.pack) strings
     Pc.UnicodeStrings strings annot ->
-      LiteralEx $ StringLit strings
+      LiteralEx $ StringLit $ map (T.encodeUtf8 . T.pack) strings
     Pc.Call { call_fun = fun, call_args = args, expr_annot = annot } ->
       CallEx (evalExpr fun) (map evalArgs args)
     Pc.Subscript { subscriptee = sub, subscript_expr = idx, expr_annot = annot } ->
-      ShownEx $ "subscript: " <> show (evalExpr sub) <> " " <> show (evalExpr idx)
+      ShownEx $ "subscript: " <> (T.encodeUtf8 . T.pack . show) (evalExpr sub) <> " " <> (T.encodeUtf8 . T.pack . show) (evalExpr idx)
     Pc.SlicedExpr { slicee = slicee, slices = slices, expr_annot = annot } ->
-      ShownEx $ "sliced: " <> show (evalExpr slicee) <> " " <> show slices
+      ShownEx $ "sliced: " <> (T.encodeUtf8 . T.pack . show) (evalExpr slicee) <> " " <> (T.encodeUtf8 . T.pack . show) slices
     Pc.CondExpr { ce_true_branch = trueBranch, ce_condition = condition, ce_false_branch = falseBranch, expr_annot = annot } ->
       CondEx (evalExpr condition) (evalExpr trueBranch) (evalExpr falseBranch)
     Pc.BinaryOp { operator = op, left_op_arg = left, right_op_arg = right, expr_annot = annot } ->
@@ -430,19 +431,19 @@ evalExpr expr =
     Pc.UnaryOp { operator = op, op_arg = arg, expr_annot = annot } ->
       UniOpEx (showNaryOp op) (evalExpr arg)
     Pc.Dot { dot_expr = expr, dot_attribute = ident, expr_annot = annot } ->
-      DotEx (evalExpr expr) ident.ident_string
+      DotEx (evalExpr expr) (T.encodeUtf8 . T.pack $ ident.ident_string)
     Pc.Lambda { lambda_args = params, lambda_body = body, expr_annot = annot } ->
-      ShownEx $ "lambda: " <> intercalate ", " (map show params) <> " " <> show body
+      ShownEx $ "lambda: " <> Bs.intercalate ", " (map (T.encodeUtf8 . T.pack . show) params) <> " " <> (T.encodeUtf8 . T.pack . show) body
     Pc.Tuple { tuple_exprs = exprs, expr_annot = annot } ->
       TupleEx (map evalExpr exprs)
     Pc.Yield { yield_arg = arg, expr_annot = annot } ->
-      ShownEx $ "yield: " <> show arg
+      ShownEx $ "yield: " <> (T.encodeUtf8 . T.pack . show) arg
     Pc.Generator { gen_comprehension = comprehension, expr_annot = annot } ->
-      ShownEx $ "generator: " <> show comprehension
+      ShownEx $ "generator: " <> (T.encodeUtf8 . T.pack . show) comprehension
     Pc.Await { await_expr = expr, expr_annot = annot } ->
-      ShownEx $ "await: " <> show (evalExpr expr)
+      ShownEx $ "await: " <> bsShowExpr (evalExpr expr)
     Pc.ListComp { list_comprehension = comprehension, expr_annot = annot } ->
-      ShownEx $ "listcomp: " <> show comprehension
+      ShownEx $ "listcomp: " <> (T.encodeUtf8 . T.pack . show) comprehension
     Pc.List { list_exprs = exprs, expr_annot = annot } ->
       case exprs of
         [] -> ArrayEx []
@@ -450,17 +451,80 @@ evalExpr expr =
     Pc.Dictionary { dict_mappings = mappings, expr_annot = annot } ->
       MapEx $ map evalDictKeyDatumList mappings
     Pc.DictComp { dict_comprehension = comprehension, expr_annot = annot } ->
-      ShownEx $ "dictcomp: " <> show comprehension
+      ShownEx $ "dictcomp: " <> (T.encodeUtf8 . T.pack . show) comprehension
     Pc.Set { set_exprs = exprs, expr_annot = annot } ->
-      ShownEx $ "set: " <> intercalate ", " (map show exprs)
+      ShownEx $ "set: " <> Bs.intercalate ", " (map (bsShowExpr . evalExpr) exprs)
     Pc.SetComp { set_comprehension = comprehension, expr_annot = annot } ->
-      ShownEx $ "setcomp: " <> show comprehension
+      ShownEx $ "setcomp: " <> (T.encodeUtf8 . T.pack . show) comprehension
     Pc.Starred { starred_expr = expr, expr_annot = annot } ->
-      ShownEx $ "starred: " <> show (evalExpr expr)
+      ShownEx $ "starred: " <> bsShowExpr (evalExpr expr)
     Pc.Paren { paren_expr = expr, expr_annot = annot } ->
       ParenEx (evalExpr expr)
     Pc.StringConversion { backquoted_expr = expr, expr_anot = annot } ->
-      ShownEx $ "stringconversion: " <> show (evalExpr expr)
+      ShownEx $ "stringconversion: " <> bsShowExpr (evalExpr expr)
+
+
+bsShowExpr :: Expr -> Bs.ByteString
+bsShowExpr expr=
+  case expr of
+    VarEx s ->
+      s
+    LiteralEx lit ->
+      bsShowLit lit
+    CallEx func args ->
+      bsShowExpr func <> "(" <> Bs.intercalate ", " (map bsShowArg args) <> ")"
+    LambdaEx expr ->
+      bsShowExpr expr
+    ArrayEx exprs ->
+      "[" <> Bs.intercalate ", " (map bsShowExpr exprs) <> "]"
+    MapEx exprs ->
+      "{" <> Bs.intercalate ", " (map bsShowExpr exprs) <> "}"
+    ParenEx expr ->
+      "(" <> bsShowExpr expr <> ")"
+    BinOpEx op left right ->
+      bsShowExpr left <> " " <> op <> " " <> bsShowExpr right
+    UniOpEx op expr ->
+      op <> " " <> bsShowExpr expr
+    DotEx expr attr ->
+      bsShowExpr expr <> "." <> attr
+    TupleEx exprs ->
+      "(" <> Bs.intercalate ", " (map bsShowExpr exprs) <> ")"
+    CondEx cond trueBranch falseBranch ->
+      bsShowExpr cond <> " ? " <> bsShowExpr trueBranch <> " : " <> bsShowExpr falseBranch
+    DictEx key datum ->
+      "{" <> bsShowExpr key <> " => " <> bsShowExpr datum <> "}"
+    ShownEx s ->
+      "s:" <> s
+
+
+bsShowLit :: Literal -> Bs.ByteString
+bsShowLit lit =
+  case lit of
+    IntLit n ->
+      T.encodeUtf8 . T.pack . show $ n
+    LIntLit n ->
+      T.encodeUtf8 . T.pack . show $ n
+    FloatLit f ->
+      T.encodeUtf8 . T.pack . show $ f
+    StringLit strs ->
+      Bs.intercalate "++" strs
+    BoolLit b ->
+      if b then "True" else "False"
+    NoneLit ->
+      "None"
+    EllipsisLit ->
+      "..."
+
+bsShowArg :: Argument -> Bs.ByteString
+bsShowArg arg =
+  case arg of
+    VarArg s ->
+      s
+    LambdaArg expr ->
+      bsShowExpr expr
+    NamedArg name expr ->
+      name <> "=" <> bsShowExpr expr
+
 
 evalDictKeyDatumList :: forall annot. Show annot => Pc.DictKeyDatumList annot -> Expr
 evalDictKeyDatumList list =
@@ -502,7 +566,7 @@ data Op annot
    | Invert { op_annot :: annot } -- ^ \'~\' (bitwise inversion of its integer argument)
    | Modulo { op_annot :: annot } -- ^ \'%\'
 -}
-showNaryOp :: Pc.Op annot -> String
+showNaryOp :: Pc.Op annot -> Bs.ByteString
 showNaryOp op =
   case op of
     Pc.And { op_annot = annot } ->
@@ -567,9 +631,9 @@ decodeTargetExpr :: forall annot. Show annot => Pc.Expr annot -> Expr
 decodeTargetExpr expr =
   case expr of
     Pc.Var ident annot ->
-      VarEx ident.ident_string
+      VarEx $ (T.encodeUtf8 . T.pack) ident.ident_string
     _ ->
-      ShownEx . show $ evalExpr expr
+      ShownEx . T.encodeUtf8 . T.pack . show $ evalExpr expr
 
 decodeArg :: Pc.Argument annot -> Maybe String
 decodeArg arg =
@@ -621,7 +685,7 @@ evalArgs arg =
     Pc.ArgExpr {arg_expr = e, arg_annot = a} ->
       case e of
         Pc.Var ident annot ->
-          VarArg ident.ident_string
+          VarArg $ T.encodeUtf8 . T.pack $ ident.ident_string
         _ -> LambdaArg $ evalExpr e
     Pc.ArgVarArgsPos {arg_expr = e, arg_annot = a} ->
       LambdaArg $ evalExpr e
@@ -630,5 +694,5 @@ evalArgs arg =
     Pc.ArgKeyword {arg_keyword = k, arg_expr = e, arg_annot = a} ->
       case e of
         Pc.Var ident annot ->
-          NamedArg k.ident_string (LiteralEx $ StringLit [ident.ident_string])
-        _ -> NamedArg k.ident_string (evalExpr e)
+          NamedArg (T.encodeUtf8 . T.pack $ k.ident_string) (LiteralEx $ StringLit [T.encodeUtf8 . T.pack $ ident.ident_string])
+        _ -> NamedArg (T.encodeUtf8 . T.pack $ k.ident_string) (evalExpr e)

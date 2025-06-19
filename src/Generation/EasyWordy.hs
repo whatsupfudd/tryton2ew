@@ -64,7 +64,7 @@ generateApp destPath uiDefs@(_, classInstances, viewDefs) locales logicElements 
               Pp.ModelEl trytonModel ->
                 case Mp.lookup "v:__name__" trytonModel.fields of
                   Just aName -> case aName.value of
-                    Pp.LiteralEx (Pp.StringLit str) -> Mp.insert ((T.drop 1 . T.init . T.pack) (concat str)) trytonModel accum
+                    Pp.LiteralEx (Pp.StringLit str) -> Mp.insert (T.decodeUtf8 (Bs.drop 1 . Bs.init . mconcat $ str)) trytonModel accum
                     _ -> accum
                   Nothing -> accum
               _ -> accum

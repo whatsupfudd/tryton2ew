@@ -46,6 +46,7 @@ procTreeFields =
       "expand" -> Right (mbName, mbWidget, mbString)
       "tree_invisible" -> Right (mbName, mbWidget, mbString)
       "readonly" -> Right (mbName, mbWidget, mbString)
+      "icon" -> Right (mbName, mbWidget, mbString)
       _ -> Left ("Unknown attribute: " <> T.unpack anAttrib.nameA)
     ) (Nothing, Nothing, Nothing)
 

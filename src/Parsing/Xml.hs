@@ -49,6 +49,18 @@ data ViewDefs = ViewDefs {
   deriving (Show)
 
 
+emptyViewDefs :: ViewDefs
+emptyViewDefs = ViewDefs {
+  trees = Mp.empty
+  , forms = Mp.empty
+  , lists = Mp.empty
+  , graphs = Mp.empty
+  , boards = Mp.empty
+  , calendars = Mp.empty
+  , errors = Mp.empty
+  }
+
+
 data Definition =
   ModelDF ClassInstance
   | TreeDF [Attribute] [TreeElement]

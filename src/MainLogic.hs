@@ -30,7 +30,7 @@ runWithOptions cliOptions fileOptions = do
           case aJob of
             Opt.HelpCmd -> Cmd.helpCmd
             Opt.VersionCmd -> Cmd.versionCmd
-            Opt.ImporterCmd srcPath destPath -> Cmd.menuFinderCmd srcPath destPath
+            Opt.ImporterCmd importOpts -> Cmd.importerCmd importOpts
       rtOptions <- Opt.mergeOptions cliOptions fileOptions envOptions
       result <- cmdExecutor rtOptions
       -- TODO: return a properly kind of conclusion.

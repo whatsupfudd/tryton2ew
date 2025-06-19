@@ -47,6 +47,8 @@ dependencies:
   - language-python
   # For creating text templates:
   - raw-strings-qq
+  # For managing ByteString characters:
+  - word8
 
 
 

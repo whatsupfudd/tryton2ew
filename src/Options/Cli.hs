@@ -22,11 +22,21 @@ data GlobalOptions = GlobalOptions {
   , debugGO :: String
   }
 
+data ImporterOptions = ImporterOptions {
+  inPathIO :: FilePath
+  , destPathIO :: FilePath
+  , schemaIO :: Bool
+  , bootstrapIO :: Bool
+  , noAppIO :: Bool
+  , noLocalesIO :: Bool
+  }
+ deriving (Show)
+
 data Command =
   HelpCmd
   | VersionCmd
-  | ImporterCmd FilePath FilePath
-  deriving stock (Show)
+  | ImporterCmd ImporterOptions
+  deriving (Show)
 
 
 parseCliOptions :: IO (Either String CliOptions)
@@ -88,17 +98,35 @@ commandDefs =
     cmdArray = [
       ("help", pure HelpCmd, "Help about any command.")
       , ("version", pure VersionCmd, "Shows the version number of importer.")
-      , ("import", menuFinderOpts, "Loads up the Tryton definitions from a directory and converts them to an EasyWordy application.")
+      , ("import", ImporterCmd <$> importerOpts, "Loads up the Tryton definitions from a directory and converts them to an EasyWordy application.")
       ]
     headArray = head cmdArray
     tailArray = tail cmdArray
   in
-    foldl (\accum aCmd -> (cmdBuilder aCmd) <> accum) (cmdBuilder headArray) tailArray
+    foldl (\accum aCmd -> cmdBuilder aCmd <> accum) (cmdBuilder headArray) tailArray
   where
     cmdBuilder (label, cmdDef, desc) =
       command label (info cmdDef (progDesc desc))
 
-menuFinderOpts :: Parser Command
-menuFinderOpts =
-  ImporterCmd <$> strArgument (metavar "FILE" <> help "Directory containing the Tryton definitions.")
+importerOpts :: Parser ImporterOptions
+importerOpts =
+  ImporterOptions <$> strArgument (metavar "FILE" <> help "Directory containing the Tryton definitions.")
               <*> strArgument (metavar "FILE" <> help "Directory to save the EW app in.")
+              <*> switch (
+                  long "schema"
+                  <> short 's'
+                  <> help "Generate DB schemas from Python definitions."
+                )
+              <*> switch (
+                  long "bootstrap"
+                  <> short 'b'
+                  <> help "Generate DB bootstrap data from XML definitions."
+                )
+              <*> switch (
+                  long "noapp"
+                  <> help "Do not generate the EasyWordy Wapp."
+                )
+              <*> switch (
+                  long "nopot"
+                  <> help "Do not parse the locales (.po, .pot) files."
+                )

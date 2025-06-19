@@ -5,7 +5,7 @@
 module Commands.Importer where
 
 import Control.Applicative         ((<|>))
-import Control.Monad               (forM, forM_, mapM)
+import Control.Monad               (forM, forM_, mapM, unless, when)
 import Control.Exception           (try, SomeException)
 
 import qualified Data.ByteString as Bs
@@ -28,6 +28,7 @@ import Text.XML.Cursor (Cursor, attribute, child, content
                         , element, fromDocument, node, ($//), ($/), (>=>), (&/))
 
 import qualified Options.Runtime as Rto
+import qualified Options.Cli as Cli
 import qualified Parsing.Python as Py
 import qualified Generation.Sql as Sq
 import qualified Parsing.Xml as Xm
@@ -49,43 +50,57 @@ data TargetFile = TargetFile {
   }
 
 
-type UiDefs = ([Xm.MenuItem], Mp.Map T.Text [Xm.ClassInstance], Xm.ViewDefs)
+type XmlDefs = ([Xm.MenuItem], Mp.Map T.Text [Xm.ClassInstance], Xm.ViewDefs)
 
 
-menuFinderCmd :: FilePath -> FilePath -> Rto.RunOptions -> IO ()
-menuFinderCmd srcPath destPath rtOpts =
+importerCmd :: Cli.ImporterOptions -> Rto.RunOptions -> IO ()
+importerCmd importOpts rtOpts =
   let
     testing = False
   in
   if testing then
-    putStrLn $ "@[menuFinderCmd] nothing to test."
+    putStrLn "@[importerCmd] nothing to test."
   else do
-    targetFiles <- getTargetFiles srcPath
-    let
-      !xmlFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == XmlFile ]
-      !potFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == PotFile ]
-      !pyFiles  = [ tf.pathTF | tf <- targetFiles, tf.kindTF == PyFile ]
-    putStrLn $ "nbr xmlFiles: " <> show (length xmlFiles)
-    uiDefs <- handleXmlFiles xmlFiles destPath
-    {-
-    let
-      defs = snd uiDefs
-    case Mp.lookup "ir.ui.icon" defs of
-      Nothing -> pure ()
-      Just iconDefs ->
+    targetFiles <- getTargetFiles importOpts.inPathIO
+
+    (xmlDefs, locales) <- if importOpts.noAppIO then
+        pure (([], Mp.empty, Xm.emptyViewDefs), Mp.empty)
+      else
         let
-          iconMaps = Ew.buildIconDefMap (Just iconDefs)
-        in
-          putStrLn $ "@[menuFinderCmd] iconMap: " <> show iconMaps
-    -}
-    putStrLn $ "nbr potFiles: " <> show (length potFiles)
-    locales <- handlePotFiles potFiles destPath
+          !xmlFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == XmlFile ]
+          !potFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == PotFile ]
+        in do
+        putStrLn $ "nbr xmlFiles: " <> show (length xmlFiles)
+        xmlRez <- handleXmlFiles xmlFiles importOpts.destPathIO
+        putStrLn $ "nbr potFiles: " <> show (length potFiles)
+        potRez <- if importOpts.noLocalesIO then
+          pure Mp.empty
+        else
+          handlePotFiles potFiles importOpts.destPathIO
+        pure (xmlRez, potRez)
+    let
+      (_, clInstances, _) = xmlDefs
+
+    let
+      !pyFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == PyFile ]
     putStrLn $ "nbr pyFiles:  " <> show (length pyFiles)
-    logicDefs <- handlePyFiles pyFiles destPath
+    logicDefs <- handlePyFiles pyFiles importOpts.destPathIO
     genStartTime <- getCurrentTime
-    rez <- Ew.generateApp destPath uiDefs locales logicDefs
+
+    unless importOpts.noAppIO $ do
+      rez <- Ew.generateApp importOpts.destPathIO xmlDefs locales logicDefs
+      pure ()
+
+    when importOpts.schemaIO $ do
+      rez <- Sq.genSchemas importOpts.destPathIO logicDefs
+      case rez of
+        Left err -> putStrLn $ "@[importerCmd] genSchemas err: " <> err
+        Right _ -> pure ()
+    when importOpts.bootstrapIO $
+      Sq.genBootstrap importOpts.destPathIO clInstances
+
     genEndTime <- getCurrentTime
-    putStrLn $ "@[menuFinderCmd] time to generate: " <> show (diffUTCTime genEndTime genStartTime)
+    putStrLn $ "@[importerCmd] time to generate: " <> show (diffUTCTime genEndTime genStartTime)
     pure ()
 
 
@@ -110,7 +125,7 @@ getTargetFiles !dir = do
     pure (concat paths)
 
 
-handleXmlFiles :: [FilePath] -> FilePath -> IO UiDefs
+handleXmlFiles :: [FilePath] -> FilePath -> IO XmlDefs
 handleXmlFiles !files destPath = do
   !startItemsTime <- getCurrentTime
   !mbItems <- forM files $ \aFile -> do
@@ -217,10 +232,10 @@ handlePyFiles files destPath = do
 
   !startGenTime <- getCurrentTime
   let
-    eiClassDefs = map (\(f, elements) -> (f, Sq.genTableDef elements)) allElements
+    eiClassDefs = map (\(f, elements) -> (f, Sq.genTableDefs elements)) allElements
   TIO.writeFile (destPath </> "tableDefs.sql") . T.pack . L.intercalate "\n" $ map (\(f, eiTableDefs) ->
       let
-        msgs = foldl(\accum td ->
+        msgs = foldl (\accum td ->
            case td of
              Left err -> accum <> err <> "\n"
              Right tableDef -> accum <> show tableDef <> "\n"
