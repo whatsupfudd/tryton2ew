@@ -31,10 +31,12 @@ library
       Commands.Version
       DB.Connect
       DB.Opers
+      Generation.DataPrep
       Generation.EasyWordy
       Generation.Elm
       Generation.EwTypes
       Generation.Fuddle
+      Generation.HsLib
       Generation.Sql
       Generation.Svg
       Generation.Utils

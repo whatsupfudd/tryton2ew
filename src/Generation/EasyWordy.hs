@@ -1,4 +1,3 @@
-{-# LANGUAGE QuasiQuotes #-}
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 {-# HLINT ignore "Redundant maybe" #-}
 {-# HLINT ignore "Use <|>" #-}
@@ -13,7 +12,6 @@ import Data.Maybe (fromMaybe, isNothing)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Encoding as T
-import Text.RawString.QQ (r)
 
 import System.FilePath ((</>))
 
@@ -22,7 +20,12 @@ import qualified Parsing.Pot as Po
 import qualified Parsing.Python as Pp
 import qualified Generation.Elm as E
 import qualified Generation.Views as Vw
+import qualified Generation.Fuddle as Fd
+import qualified Generation.HsLib as Hs
+import qualified Generation.Sql as Sq
 import Generation.EwTypes
+
+import qualified Generation.Utils as Ut
 
 
 type UiDefs = ([Xm.MenuItem], Mp.Map T.Text [Xm.ClassInstance], Xm.ViewDefs)
@@ -48,8 +51,8 @@ Need to generate:
 -}
 
 
-generateApp :: FilePath -> UiDefs -> Po.LocaleDefs -> [(FilePath, [Pp.LogicElement])] -> IO (Either String ())
-generateApp destPath uiDefs@(_, classInstances, viewDefs) locales logicElements =
+generateApp :: FilePath -> UiDefs -> Mp.Map T.Text Sq.SqlTable -> Po.LocaleDefs -> [(FilePath, [Pp.LogicElement])] -> IO (Either String ())
+generateApp destPath uiDefs@(_, classInstances, viewDefs) tableMap locales logicElements =
   let
     consoLocales = consolidateLocales locales
     eiLeftMenuNav = genLeftMenu uiDefs consoLocales
@@ -62,7 +65,7 @@ generateApp destPath uiDefs@(_, classInstances, viewDefs) locales logicElements 
         logicMap = foldl (\accum anElement ->
             case anElement of
               Pp.ModelEl trytonModel ->
-                case Mp.lookup "v:__name__" trytonModel.fields of
+                case Mp.lookup "__name__" trytonModel.fields of
                   Just aName -> case aName.value of
                     Pp.LiteralEx (Pp.StringLit str) -> Mp.insert (T.decodeUtf8 (Bs.drop 1 . Bs.init . mconcat $ str)) trytonModel accum
                     _ -> accum
@@ -70,23 +73,27 @@ generateApp destPath uiDefs@(_, classInstances, viewDefs) locales logicElements 
               _ -> accum
           ) Mp.empty (concatMap snd logicElements)
         (actionWindows, icons, errs) = scanInstances logicMap viewDefs (concat $ Mp.elems classInstances)
-        components = genComponents actionWindows viewDefs menus consoLocales
-        dynRoutes = genDynRoutes components
+        sqlOps = Hs.genSqlOps tableMap logicMap
+        components = genComponents actionWindows viewDefs menus sqlOps consoLocales
+        dynRoutes = Fd.genDynRoutes components
         yamlEntries = genFunctionDefs components
         context = EwContext {
           components = components
           , menus = menus
           , appEntries = []
         }
-        renderedMenus = leftPartAItems menus
+        renderedMenus = Fd.leftPartAItems menus
       TIO.writeFile (destPath </> "actWins.txt") $
         -- T.intercalate "\n" (map (T.pack . show) (Mp.toList logicMap))
         T.intercalate "\n" (map (T.pack . show) (Mp.elems actionWindows))
         <> "\n\n" <> T.intercalate "\n" (map T.pack errs)
+      TIO.writeFile (destPath </> "logicMap.txt") $ T.intercalate "\n" (map (T.pack . show) (Mp.toList logicMap))
       TIO.writeFile (destPath </> "wapp/Protected/LeftMenuNav.elm") (T.decodeUtf8 renderedMenus)
       TIO.writeFile (destPath </> "wapp/DynRoutes.elm") (T.decodeUtf8 dynRoutes)
       TIO.writeFile (destPath </> "yamlEntries.txt") $ T.decodeUtf8 yamlEntries
       TIO.writeFile (destPath </> "compLocales.txt") $ T.pack (show consoLocales)
+      mapM_ (\(fName, (fetchOp, insertOp)) ->
+          Hs.genSqlFile (destPath </> "HsLib") (Sq.modelToSqlName (T.encodeUtf8 fName)) [fetchOp, insertOp]) (Mp.toList sqlOps)
       mapM_ (saveComponent destPath) components
       pure $ Right ()
 
@@ -501,8 +508,8 @@ genLeftMenu (menuItems, modelDefs, _) locales =
   Right menus
 
 
-genComponents :: Mp.Map T.Text ActionWindow -> Xm.ViewDefs -> [Menu] -> Mp.Map Bs.ByteString CompLocales -> [Component]
-genComponents actionWindows viewDefs leftMenus locales =
+genComponents :: Mp.Map T.Text ActionWindow -> Xm.ViewDefs -> [Menu] -> Mp.Map T.Text (SqlFct, SqlFct) -> Mp.Map Bs.ByteString CompLocales -> [Component]
+genComponents actionWindows viewDefs leftMenus sqlOps locales =
   concatMap (\aMenu ->
       let
         componentName = convertMenuID aMenu.mid
@@ -515,64 +522,16 @@ genComponents actionWindows viewDefs leftMenus locales =
             , moduleName = componentName
             , refID = aMenu.mid
             , types = []
-            , functions = genFunction mbActionWindow
+            , functions = Fd.genFunction aMenu.mid mbActionWindow
             , locales = Mp.empty  -- Fix this.
+            -- TODO: add the support logic for fetching or inserting data.
+            , fetchers = []
+            , inserters = []
           }
-        childrenComponents = genComponents actionWindows viewDefs aMenu.children locales
+        childrenComponents = genComponents actionWindows viewDefs aMenu.children sqlOps locales
       in
       topComp : childrenComponents
     ) leftMenus
-
-
-genFunction :: Maybe ActionWindow -> [E.FunctionDef]
-genFunction mbActionWin =
-  case mbActionWin of
-    Nothing ->
-      [
-        E.FunctionDef {
-          nameFD = "demoFct"
-          , argsFD = []
-          , typeDef = E.StringTD
-          , bodyFD =
-              E.section [ E.class_ "bg-gray-50 dark:bg-gray-900 p-3 sm:p-5 md:ml-64 lg:mr-16 min-h-full pt-20" ] [
-                E.div [E.class_ "text-red-500" ] [ E.text "No action window." ]
-              ]
-        }
-      ]
-    Just actionWin ->
-      let
-        subFcts = foldl (\accum (vName, viewDef) ->
-            case viewDef of
-          Xm.TreeDF attribs elements ->
-            Vw.genTree vName elements : accum
-          Xm.FormDF {} ->
-            accum
-          ) [] (Mp.toList actionWin.uiViewsAW)
-      in
-      [
-        E.FunctionDef {
-          nameFD = "demoFct"
-          , argsFD = []
-          , typeDef = E.StringTD
-          , bodyFD = E.div [E.class_ "bg-gray-50 dark:bg-gray-900 p-4 md:ml-64 lg:mr-16 min-h-full pt-20" ] $ case subFcts of
-              [] -> [ E.div [E.class_ "text-red-500" ] [ E.text actionWin.logicNameAW ] ]
-              _ -> [
-                E.div [ E.class_ "mx-auto max-w-screen-xl px-4 lg:px-12" ]
-                  ([ E.div [ E.class_ "flex justify-between items-center mb-4" ]
-                    [ E.h1 [ E.class_ "text-2xl text-gray-900 dark:text-white font-bold" ] [ E.text actionWin.logicNameAW ]
-                    , E.div [ E.class_ "flex items-center" ]
-                      [ E.button [ E.class_ "bg-gray-500 text-white px-4 py-2 rounded-md" ] [ E.text "Refresh" ] ]
-                    ]
-                  ]
-                  <> [ E.ApplyEE aFct.nameFD [] | aFct <- subFcts ]
-                  )
-                ]
-        }    
-      ] <> subFcts
-
-
-genSqlCode :: [Xm.Definition] -> IO (Either String ())
-genSqlCode defs = pure $ Right ()
 
 
 convertMenuID :: T.Text -> T.Text
@@ -580,86 +539,17 @@ convertMenuID oriName =
   let
     nameParts = concatMap (T.splitOn "_") (concatMap (T.splitOn "-") (T.splitOn "." oriName))
   in
-  T.intercalate "_" (map capitalize nameParts)
-
-capitalize :: T.Text -> T.Text
-capitalize aWord = T.cons (C.toUpper $ T.head aWord) (T.tail aWord)
+  T.intercalate "_" (map Ut.capitalize nameParts)
 
 
 saveComponent :: FilePath -> Component -> IO (Either String ())
 saveComponent destPath component =
   let
-    rendered = renderComponent component
+    rendered = Fd.renderComponent component
   in do
   Bs.writeFile (destPath </> component.path) rendered
   pure $ Right ()
 
-
-renderComponent :: Component -> Bs.ByteString
-renderComponent component =
-  let
-    templ_1 = [r| exposing (default, continuations)
-
-import Dict as D
-import Tuple as T
-
-import Html.String exposing (..)
-import Html.String as H
-import Html.String.Attributes exposing (..)
-import Sup.Svg as S
-import Sup.Attributes as Sa
-import Html.Htmx as Ht
-import Html.Extra as Hx
-import Html.Flowbite as Fb
-
-import Json.Encode as Enc
-import Json.Decode as Dec
-
-import FunctionRouter exposing (DynInvokeFct, CompContinuation, InvokeResult (..), NativeParams)
-
--- import Fuddle.Routes as R
-import Fuddle.Locales exposing (l)
-{-
-type alias LocalArgs = {
-    userID : Int
-}
-
-argParser : Dec.Decoder LocalArgs
-argParser =
-  Dec.map LocalArgs (Dec.field "userID" Dec.int)
-
-resultParser : Dec.Decoder a -> Dec.Decoder a
-resultParser rezParser =
-  Dec.field "result" rezParser
--}
-
-continuations : List (String, CompContinuation msgT)
-continuations = []
-
-default : DynInvokeFct msgT
-default _ jsonParams =
-  {-
-  case Dec.decodeValue argParser jsonParams of
-    Err err -> Forward <| [
-        div
-          [ class "text-red" ]
-          [ text <| "@[COMPONENT.default]: error in params: " ++ Dec.errorToString err ]
-      ]
-    Ok localArgs ->
-      ExecNative <| CONTINUATION userInfo
-  -}
-  Forward [ demoFct ]
-
-|]
-{-
-demoFct =
-  div [ class "bg-gray-50 dark:bg-gray-900 p-4 md:ml-64 lg:mr-16 min-h-full pt-20" ] [ div [ class "text-red-500" ] [ text "
--}
-  in
-  "module Components." <> T.encodeUtf8 component.moduleName
-  <> templ_1
-  <> Bs.intercalate "\n" (map E.spitFct component.functions)
- -- <> T.encodeUtf8 component.moduleName <> "\" ]]\n"
 
 consolidateLocales :: Po.LocaleDefs -> Mp.Map Bs.ByteString CompLocales
 consolidateLocales =
@@ -688,6 +578,7 @@ consolidateLocales =
           _ -> accum { errors = "unknown kind: " <> kind : accum.errors }
       ) compLoc locEntries
 
+
   locEntryKind :: Po.LocEntry -> (Bs.ByteString, Bs.ByteString)
   locEntryKind aLocEntry =
     let
@@ -700,6 +591,7 @@ consolidateLocales =
           (someKind, Bs.tail rest)
         else
           ("error: unknown kind: " <> someKind, "")
+
 
   updLocModel :: ModelLocale -> Bs.ByteString -> Po.LocEntry -> ModelLocale
   updLocModel accum content aLocEntry =
@@ -736,6 +628,7 @@ consolidateLocales =
                       updModLoc = Mp.insert modKey updKeyMap modelLoc
                     in
                     Mp.insert modelName updModLoc accum
+
 
   updLocField :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales) -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales)
   updLocField accum content aLocEntry =
@@ -838,97 +731,6 @@ analyseMenuItem locales (iconMap, iconsByNameMap) aMenuItem =
   , children = map (analyseMenuItem locales (iconMap, iconsByNameMap)) aMenuItem.childrenMI
   , action = aMenuItem.actionMI
   }
-
-
-leftPartAItems :: [Menu] -> Bs.ByteString
-leftPartAItems menus =
-  let
-    templ_1 = [r|module Protected.LeftMenuNav exposing (leftPartAItems)
-import Protected.LeftMenuDef exposing (ItemLA (..))
-
-leftPartAItems : List (ItemLA msg)
-leftPartAItems = [|]
-  in
-  templ_1
-    <> "\n" <> genMenus 0 menus
-    <> "\n  ]"
-
-
-genMenus :: Int -> [Menu] -> Bs.ByteString
-genMenus level =
-  let
-    indent = Bs.replicate (level * 2) 32
-  in
-  foldl (\accum aMenu ->
-      let
-        menuEntry = genLeftMenuItem level aMenu
-      in
-      case accum of
-        "" -> indent <> menuEntry
-        _ -> accum <> "\n" <> indent <> ", " <> menuEntry
-    ) ""
-
-
-genLeftMenuItem :: Int -> Menu -> Bs.ByteString
-genLeftMenuItem level aMenu =
-  let
-    indent = Bs.replicate (level * 2) 32
-  in
-  if null aMenu.children then
-    indent <> "Simple {\n    title = \"" <> T.encodeUtf8 aMenu.label
-    <> "\"\n" <> indent <> "    , href = \"" <> T.encodeUtf8 aMenu.mid
-    <> "\"\n" <> indent <> "    , mid = \"" <> T.encodeUtf8 aMenu.mid
-    <> "\"\n" <> indent <> "    , icon = " <> maybe "Nothing" (\i -> "Just (img [ src \"" <> T.encodeUtf8 i <> "\", width 32 ] [])") aMenu.icon
-    <> "\n" <> indent <> "    , postIcon = Nothing"
-    <> "\n" <> indent <> "    , params = Nothing"
-    <> "\n" <> indent <> "  }"
-  else
-    indent <> "Composed {\n" <> indent <> "   uid = \"" <> T.encodeUtf8 (T.toLower aMenu.label)
-    <> "\"\n" <> indent <> "    , icon = " <> maybe "Nothing" (\i -> "Just (img [ src \"" <> T.encodeUtf8 i <> "\", width 32 ] [])") aMenu.icon
-    <> "\n" <> indent <> "    , title = \"" <> T.encodeUtf8 aMenu.label
-    <> "\"\n" <> indent <> "    , children = " <> case genMenus (level + 1) aMenu.children of
-      "" -> "[]"
-      children -> "[\n" <> children <> "\n    ]"
-    <> "\n" <> indent <> "  }"
-
-
-genDynRoutes :: [Component] -> Bs.ByteString
-genDynRoutes components =
-  let
-    templ_1 = [r|module DynRoutes exposing (main)
-import Dict as D
-import Tuple as T
-
-import FunctionRouter exposing (run)
-
--- Components:|]
-
-    templ_2 = [r|
-
--- This must be created on a per-instance of app/UI:
--- uiFunctions : D.Dict String (ComponentBuilder msg pT)
-dynSpecifications = [
-  |]
-
-    templ_3 = [r|
-  ]
-
--- This should be part of the FunctionRouter library:
-main =
-  let
-    dynFunctions = D.fromList <| List.map (\(label, fct,_) -> (label, fct)) dynSpecifications
-    compContinuations = D.fromList <| List.foldl (
-        \(label, _, conts) accum -> accum ++ (
-            List.map (\(contLabel, handler) -> (label ++ "." ++ contLabel, handler)) conts)
-      ) [] dynSpecifications
-  in
-    run (dynFunctions, compContinuations)|]
-  in
-  templ_1 <> "\n"
-   <> Bs.intercalate "\n" (map (\aComp -> let modName = T.encodeUtf8 aComp.moduleName in "import Components." <> modName <> " as " <> modName) components)
-   <> templ_2
-   <> Bs.intercalate "\n  , " (map (\aComp -> let modName = T.encodeUtf8 aComp.moduleName in "(\"" <> T.encodeUtf8 aComp.refID <> "\", " <> modName <> ".default, " <> modName <> ".continuations)") components)
-   <> templ_3
 
 
 genFunctionDefs :: [Component] -> Bs.ByteString

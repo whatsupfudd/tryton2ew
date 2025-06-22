@@ -48,7 +48,11 @@ instance Show SqlFieldDef where
 
 data SqlFieldKind =
   VarCharSFK
+  | CharSFK
+  | TextSFK
+  | FullTextSFK
   | BooleanSFK
+  | NumericSFK
   | IntegerSFK
   | FloatSFK
   | DateSFK
@@ -56,18 +60,14 @@ data SqlFieldKind =
   | TimeSFK
   | TimeDeltaSFK
   | TimestampSFK
-  | BinarySFK
+  | EnumSFK
+  | MultiValueSFK
   | SelectionSFK
   | MultiSelectionSFK
-  | EnumSFK
-  | CharSFK
-  | TextSFK
-  | FullTextSFK
-  | NumericSFK
+  | DictSFK
+  | BinarySFK
   | RelationSFK SqlRelationKind
   | FunctionSFK
-  | MultiValueSFK
-  | DictSFK
   | CommentSFK String
   deriving (Show, Eq)
 
@@ -87,22 +87,13 @@ data SqlFieldParams =
   deriving (Show, Eq)
 
 
-genSchemas :: FilePath -> [(FilePath, [Py.LogicElement])] -> IO (Either String ())
-genSchemas destPath elements =
+genSchemas :: FilePath -> [SqlTable] -> IO (Mp.Map T.Text SqlTable)
+genSchemas destPath sqlTables =
   let
-    eiRezs = concatMap genTableDefs [ snd anElement | anElement <- elements ]
-  in
-  case rights eiRezs of
-    [] -> pure . Left $ "@[genSchemas] " <> show eiRezs
-    tables ->
-      let
-        tableDefs = map spitModel tables
-      in do
-      Bs.writeFile (destPath </> "schemas.sql") $ Bs.intercalate "\n\n" tableDefs
-      case lefts eiRezs of
-        [] -> pure $ Right ()
-        lefts -> pure . Left $ "@[genSchemas] " <> L.intercalate "\n" lefts
-
+    createDefs = map spitModel sqlTables
+  in do
+  Bs.writeFile (destPath </> "schemas.sql") (Bs.intercalate "\n" (map fst createDefs) <> Bs.intercalate "\n" (map snd createDefs))
+  pure $ Mp.fromList [ (T.decodeUtf8 table.nameST, table) | table <- sqlTables ]
 
 
 genTableDefs :: [Py.LogicElement] -> [Either String SqlTable]
@@ -146,107 +137,25 @@ parseModel model =
         Left $ "@[parseModel] model " <> model.name <> " has a non-string __name__ field"
 
 
-{-
-Conversions:
-Python def:
-class RCRI(ModelSQL, ModelView):
-    'Revised Cardiac Risk Index'
-    __name__ = 'gnuhealth.rcri'
-
-    patient = fields.Many2One('gnuhealth.patient', 'Patient ID', required=True)
-    rcri_date = fields.DateTime('Date', required=True)
-    health_professional = fields.Many2One(
-        'gnuhealth.healthprofessional', 'Health Professional',
-        help="Health professional /"
-        "Cardiologist who signed the assesment RCRI")
-
-    rcri_high_risk_surgery = fields.Boolean(
-        'High Risk surgery',
-        help='Includes andy suprainguinal vascular, intraperitoneal,'
-        ' or intrathoracic procedures')
-
-    rcri_ischemic_history = fields.Boolean(
-        'History of ischemic heart disease',
-        help="history of MI or a positive exercise test, current \
-        complaint of chest pain considered to be secondary to myocardial \
-        ischemia, use of nitrate therapy, or ECG with pathological \
-        Q waves; do not count prior coronary revascularization procedure \
-        unless one of the other criteria for ischemic heart disease is \
-        present")
-
-    rcri_congestive_history = fields.Boolean(
-        'History of congestive heart disease')
-
-    rcri_diabetes_history = fields.Boolean(
-        'Preoperative Diabetes',
-        help="Diabetes Mellitus requiring treatment with Insulin")
-
-    rcri_cerebrovascular_history = fields.Boolean(
-        'History of Cerebrovascular disease')
-
-    rcri_kidney_history = fields.Boolean(
-        'Preoperative Kidney disease',
-        help="Preoperative serum creatinine >2.0 mg/dL (177 mol/L)")
-
-    rcri_total = fields.Integer(
-        'Score',
-        help='Points 0: Class I Very Low (0.4% complications)\n'
-        'Points 1: Class II Low (0.9% complications)\n'
-        'Points 2: Class III Moderate (6.6% complications)\n'
-        'Points 3 or more : Class IV High (>11% complications)')
-
-    rcri_class = fields.Selection([
-        (None, ''),
-        ('I', 'I'),
-        ('II', 'II'),
-        ('III', 'III'),
-        ('IV', 'IV'),
-        ], 'RCRI Class', sort=False)
-
-
-Resulting SQL:
-CREATE TABLE public.gnuhealth_rcri (
-    id integer NOT NULL,
-    create_date timestamp(6) without time zone,
-    write_date timestamp(6) without time zone,
-    create_uid integer,
-    write_uid integer,
-    rcri_date timestamp(0) without time zone NOT NULL,
-    rcri_high_risk_surgery boolean DEFAULT false,
-    patient integer NOT NULL,
-    rcri_ischemic_history boolean DEFAULT false,
-    rcri_class character varying,
-    rcri_kidney_history boolean DEFAULT false,
-    rcri_cerebrovascular_history boolean DEFAULT false,
-    rcri_diabetes_history boolean DEFAULT false,
-    rcri_total integer,
-    rcri_congestive_history boolean DEFAULT false,
-    health_professional integer,
-    CONSTRAINT gnuhealth_rcri_id_positive CHECK ((id >= 0))
-);
-
-
-ALTER TABLE ONLY public.gnuhealth_rcri
-    ADD CONSTRAINT gnuhealth_rcri_patient_fkey FOREIGN KEY (patient) REFERENCES public.gnuhealth_patient(id) 
-ON DELETE RESTRICT;
--}
-
-spitModel :: SqlTable -> Bs.ByteString
+spitModel :: SqlTable -> (Bs.ByteString, Bs.ByteString)
 spitModel table =
   let
-    tableName = Bs.intercalate "_" (Bs.split 46 table.nameST)
+    tableName = modelToSqlName table.nameST
     fieldDefs = mapMaybe spitField table.fieldsST
     alterDefs = spitAlterDef tableName $ filterRefFields table.fieldsST
-  in
-  "drop table if exists " <> tableName <> ";\n"
-  <> "create table " <> tableName <> " (\n"
-  <> "   id serial primary key"
-  <> if null fieldDefs then
-      ""
-    else
-      "\n  , " <> Bs.intercalate "\n  , " fieldDefs
-  <> "\n);\n"
-  <> "\n" <> Bs.intercalate "\n" alterDefs
+  in (
+    "drop table if exists " <> tableName <> " cascade;\n"
+    <> "create table " <> tableName <> " (\n"
+    <> "   id serial primary key"
+    <> (
+      if null fieldDefs then
+        ""
+      else
+        "\n  , " <> Bs.intercalate "\n  , " fieldDefs
+      )
+    <> "\n);\n"
+    , Bs.intercalate "\n" alterDefs
+  )
   where
   filterRefFields :: [SqlFieldDef] -> [SqlFieldDef]
   filterRefFields = filter (\field -> case field.kindSF of RelationSFK _ -> True; _ -> False)
@@ -309,7 +218,7 @@ spitModel table =
     in
     case mbFieldType of
       Nothing -> Nothing
-      Just fType -> Just $ field.oriName <> " " <> fType <> if field.required then " not null" else ""
+      Just fType -> Just $ quoteReservedWord field.oriName <> " " <> fType <> if field.required then " not null" else ""
 
 
   spitAlterDef :: Bs.ByteString -> [SqlFieldDef] -> [Bs.ByteString]
@@ -502,7 +411,7 @@ buildColumn fieldName typeName fArgs =
               case lExpr of
                 Py.LiteralEx (Py.StringLit str) ->
                   Right (SqlFieldDef { nameSF = Bs.intercalate "_" (map (Bs.map W.toUpper . Py.removeQuotes) str)
-                            , kindSF = kind, params = NonePR, oriName = fieldName, required = False })
+                            , kindSF = kind, params = NonePR, oriName = quoteReservedWord fieldName, required = False })
                 _ -> Left $ "@[extractFieldDefs] unexpected lambda arg expr: " <> show lExpr
             _ -> Left $ "@[extractFieldDefs] unexpected first arg: " <> show a
         a : b : restArgs ->
@@ -542,7 +451,71 @@ buildColumn fieldName typeName fArgs =
             _ -> Left $ "@[extractFieldDefs] unexpected first arg: " <> show a
 
 
-genBootstrap :: FilePath -> Mp.Map T.Text [Xm.ClassInstance] -> IO ()
-genBootstrap destPath clInstances =
-  pure ()
+modelToSqlName :: Bs.ByteString -> Bs.ByteString
+modelToSqlName = Bs.intercalate "_" . concatMap (Bs.split 45) . Bs.split 46
 
+
+quoteReservedWord :: Bs.ByteString -> Bs.ByteString
+quoteReservedWord aWord =
+  if isSqlReserved aWord then
+    "\"" <> aWord <> "\""
+  else
+    aWord
+
+
+isSqlReserved :: Bs.ByteString -> Bool
+isSqlReserved aWord = Bs.map W.toUpper aWord `elem` [
+      "ABS", "ABSENT", "ABSOLUTE", "ACOS", "ACTION", "ADD", "ALL", "ALLOCATE", "ALTER"
+    , "ANALYSE", "ANALYZE", "AND", "ANY", "ANY_VALUE", "ARE", "ARRAY", "ARRAY_AGG"
+    , "ARRAY_MAX_CARDINALITY", "AS", "ASC", "ASENSITIVE", "ASIN", "ASSERTION", "ASYMMETRIC"
+    , "AT", "ATAN", "ATOMIC", "AUTHORIZATION", "AVG", "BEGIN", "BEGIN_FRAME", "BEGIN_PARTITION"
+    , "BETWEEN", "BIGINT", "BINARY", "BIT", "BIT_LENGTH", "BLOB", "BOOLEAN", "BOTH", "BTRIM", "BY"
+    , "CALL", "CALLED", "CARDINALITY", "CASCADE", "CASCADED", "CASE", "CAST", "CATALOG", "CEIL"
+    , "CEILING", "CHAR", "CHARACTER", "CHARACTER_LENGTH", "CHAR_LENGTH", "CHECK", "CLASSIFIER", "CLOB"
+    , "CLOSE", "COALESCE", "COLLATE", "COLLATION", "COLLECT", "COLUMN", "COMMIT", "CONCURRENTLY"
+    , "CONDITION", "CONNECT", "CONNECTION", "CONSTRAINT", "CONSTRAINTS", "CONTAINS", "CONTINUE", "CONVERT"
+    , "COPY", "CORR", "CORRESPONDING", "COS", "COSH", "COUNT", "COVAR_POP", "COVAR_SAMP", "CREATE", "CROSS"
+    , "CUBE", "CUME_DIST", "CURRENT", "CURRENT_CATALOG", "CURRENT_DATE", "CURRENT_DEFAULT_TRANSFORM_GROUP"
+    , "CURRENT_PATH", "CURRENT_ROLE", "CURRENT_ROW", "CURRENT_SCHEMA", "CURRENT_TIME", "CURRENT_TIMESTAMP"
+    , "CURRENT_TRANSFORM_GROUP_FOR_TYPE", "CURRENT_USER", "CURSOR", "CYCLE", "DATALINK", "DATE", "DAY"
+    , "DEALLOCATE", "DEC", "DECFLOAT", "DECIMAL", "DECLARE", "DEFAULT", "DEFERRABLE", "DEFERRED", "DEFINE"
+    , "DELETE", "DENSE_RANK", "DEREF", "DESC", "DESCRIBE", "DESCRIPTOR", "DETERMINISTIC", "DIAGNOSTICS"
+    , "DISCONNECT", "DISTINCT", "DLNEWCOPY", "DLPREVIOUSCOPY", "DLURLCOMPLETE", "DLURLCOMPLETEONLY"
+    , "DLURLCOMPLETEWRITE", "DLURLPATH", "DLURLPATHONLY", "DLURLPATHWRITE", "DLURLSCHEME", "DLURLSERVER"
+    , "DLVALUE", "DO", "DOMAIN", "DOUBLE", "DROP", "DYNAMIC", "EACH", "ELEMENT", "ELSE", "EMPTY", "END"
+    , "END-EXEC", "END_FRAME", "END_PARTITION", "EQUALS", "ESCAPE", "EVERY", "EXCEPT", "EXCEPTION", "EXEC"
+    , "EXECUTE", "EXISTS", "EXP", "EXTERNAL", "EXTRACT", "FALSE", "FETCH", "FILTER", "FIRST", "FIRST_VALUE"
+    , "FLOAT", "FLOOR", "FOR", "FOREIGN", "FOUND", "FRAME_ROW", "FREE", "FREEZE", "FROM", "FULL", "FUNCTION"
+    , "FUSION", "GET", "GLOBAL", "GO", "GOTO", "GRANT", "GREATEST", "GROUP", "GROUPING", "GROUPS", "HAVING"
+    , "HOLD", "HOUR", "IDENTITY", "ILIKE", "IMMEDIATE", "IMPORT", "IN", "INDICATOR", "INITIAL", "INITIALLY"
+    , "INNER", "INOUT", "INPUT", "INSENSITIVE", "INSERT", "INT", "INTEGER", "INTERSECT", "INTERSECTION"
+    , "INTERVAL", "INTO", "IS", "ISNULL", "ISOLATION", "JOIN", "JSON", "JSON_ARRAY", "JSON_ARRAYAGG", "JSON_EXISTS"
+    , "JSON_OBJECT", "JSON_OBJECTAGG", "JSON_QUERY", "JSON_SCALAR", "JSON_SERIALIZE", "JSON_TABLE"
+    , "JSON_TABLE_PRIMITIVE", "JSON_VALUE", "KEY", "LAG", "LANGUAGE", "LARGE", "LAST", "LAST_VALUE", "LATERAL"
+    , "LEAD", "LEADING", "LEAST", "LEFT", "LEVEL", "LIKE", "LIKE_REGEX", "LIMIT", "LISTAGG", "LN", "LOCAL"
+    , "LOCALTIME", "LOCALTIMESTAMP", "LOG", "LOG10", "LOWER", "LPAD", "LTRIM", "MATCH", "MATCHES", "MATCH_NUMBER"
+    , "MATCH_RECOGNIZE", "MAX", "MEMBER", "MERGE", "METHOD", "MIN", "MINUTE", "MOD", "MODIFIES", "MODULE", "MONTH"
+    , "MULTISET", "NAMES", "NATIONAL", "NATURAL", "NCHAR", "NCLOB", "NEW", "NEXT", "NO", "NONE", "NORMALIZE", "NOT"
+    , "NOTNULL", "NTH_VALUE", "NTILE", "NULL", "NULLIF", "NUMERIC", "OCCURRENCES_REGEX", "OCTET_LENGTH", "OF"
+    , "OFFSET", "OLD", "OMIT", "ON", "ONE", "ONLY", "OPEN", "OPTION", "OR", "ORDER", "OUT", "OUTER", "OUTPUT"
+    , "OVER", "OVERLAPS", "OVERLAY", "PAD", "PARAMETER", "PARTIAL", "PARTITION", "PATTERN", "PER", "PERCENT"
+    , "PERCENTILE_CONT", "PERCENTILE_DISC", "PERCENT_RANK", "PERIOD", "PLACING", "PORTION", "POSITION"
+    , "POSITION_REGEX", "POWER", "PRECEDES", "PRECISION", "PREPARE", "PRESERVE", "PRIMARY", "PRIOR", "PRIVILEGES"
+    , "PROCEDURE", "PTF", "PUBLIC", "RANGE", "RANK", "READ", "READS", "REAL", "RECURSIVE", "REF", "REFERENCES"
+    , "REFERENCING", "REGR_AVGX", "REGR_AVGY", "REGR_COUNT", "REGR_INTERCEPT", "REGR_R2", "REGR_SLOPE", "REGR_SXX"
+    , "REGR_SXY", "REGR_SYY", "RELATIVE", "RELEASE", "RESTRICT", "RESULT", "RETURN", "RETURNING", "RETURNS"
+    , "REVOKE", "RIGHT", "ROLLBACK", "ROLLUP", "ROW", "ROWS", "ROW_NUMBER", "RPAD", "RTRIM", "RUNNING", "SAVEPOINT"
+    , "SCHEMA", "SCOPE", "SCROLL", "SEARCH", "SECOND", "SECTION", "SEEK", "SELECT", "SENSITIVE", "SESSION"
+    , "SESSION_USER", "SET", "SHOW", "SIMILAR", "SIN", "SINH", "SIZE", "SKIP", "SMALLINT", "SOME", "SPACE"
+    , "SPECIFIC", "SPECIFICTYPE", "SQL", "SQLCODE", "SQLERROR", "SQLEXCEPTION", "SQLSTATE", "SQLWARNING", "SQRT"
+    , "START", "STATIC", "STDDEV_POP", "STDDEV_SAMP", "SUBMULTISET", "SUBSET", "SUBSTRING", "SUBSTRING_REGEX"
+    , "SUCCEEDS", "SUM", "SYMMETRIC", "SYSTEM", "SYSTEM_TIME", "SYSTEM_USER", "TABLE", "TABLESAMPLE", "TAN"
+    , "TANH", "TEMPORARY", "THEN", "TIME", "TIMESTAMP", "TIMEZONE_HOUR", "TIMEZONE_MINUTE", "TO", "TRAILING"
+    , "TRANSACTION", "TRANSLATE", "TRANSLATE_REGEX", "TRANSLATION", "TREAT", "TRIGGER", "TRIM", "TRIM_ARRAY"
+    , "TRUE", "TRUNCATE", "UESCAPE", "UNION", "UNIQUE", "UNKNOWN", "UNNEST", "UPDATE", "UPPER", "USAGE", "USER"
+    , "USING", "VALUE", "VALUES", "VALUE_OF", "VARBINARY", "VARCHAR", "VARIADIC", "VARYING", "VAR_POP", "VAR_SAMP"
+    , "VERBOSE", "VERSIONING", "VIEW", "WHEN", "WHENEVER", "WHERE", "WIDTH_BUCKET", "WINDOW", "WITH", "WITHIN"
+    , "WITHOUT", "WORK", "WRITE", "XML", "XMLAGG", "XMLATTRIBUTES", "XMLBINARY", "XMLCAST", "XMLCOMMENT", "XMLCONCAT"
+    , "XMLDOCUMENT", "XMLELEMENT", "XMLEXISTS", "XMLFOREST", "XMLITERATE", "XMLNAMESPACES", "XMLPARSE", "XMLPI"
+    , "XMLQUERY", "XMLSERIALIZE", "XMLTABLE", "XMLTEXT", "XMLVALIDATE", "YEAR", "ZONE"
+    ]

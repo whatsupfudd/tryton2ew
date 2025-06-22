@@ -56,8 +56,9 @@ data Component = Component {
   , types :: [E.TypeDef]
   , functions :: [E.FunctionDef]
   , locales :: Mp.Map T.Text Locales    -- keyword -> values per locale (en, fr, etc.)
+  , fetchers :: [Fetcher]
+  , inserters :: [Inserter]
 }
-
 
 data Menu = Menu {
   label :: T.Text
@@ -100,3 +101,34 @@ data AwDomain = AwDomain {
   , sequenceAD :: Int
   }
   deriving (Show)
+
+
+data Fetcher = Fetcher {
+  midFT :: Bs.ByteString
+  , handlerFT :: T.Text
+  , functionFT :: T.Text
+  , decoderFT :: T.Text
+  , hsForwardFT :: T.Text
+  , continuationFT :: T.Text
+}
+
+
+data HsForward = HsForward {
+  nameHF :: Bs.ByteString
+  , sqlFctHF :: T.Text
+  , jsDecoderHF :: T.Text
+  , jsEncoderHF :: T.Text
+  , codeHF :: Bs.ByteString
+}
+
+
+data SqlFct = SqlFct {
+  nameSF :: Bs.ByteString
+  , codeSF :: Bs.ByteString
+}
+
+data Inserter = Inserter {
+  midIn :: T.Text
+  , nameIn :: T.Text
+}
+

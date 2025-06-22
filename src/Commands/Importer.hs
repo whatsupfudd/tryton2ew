@@ -9,7 +9,7 @@ import Control.Monad               (forM, forM_, mapM, unless, when)
 import Control.Exception           (try, SomeException)
 
 import qualified Data.ByteString as Bs
-import Data.Either (partitionEithers, rights)
+import Data.Either (partitionEithers, rights, lefts)
 import qualified Data.List as L
 import qualified Data.Map.Strict as Mp
 import Data.Maybe (listToMaybe, maybeToList)
@@ -31,6 +31,7 @@ import qualified Options.Runtime as Rto
 import qualified Options.Cli as Cli
 import qualified Parsing.Python as Py
 import qualified Generation.Sql as Sq
+import qualified Generation.DataPrep as Dp
 import qualified Parsing.Xml as Xm
 import qualified Parsing.Pot as Po
 import qualified Generation.EwTypes as Ew
@@ -71,36 +72,61 @@ importerCmd importOpts rtOpts =
           !potFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == PotFile ]
         in do
         putStrLn $ "nbr xmlFiles: " <> show (length xmlFiles)
+        xmlStartTime <- getCurrentTime
         xmlRez <- handleXmlFiles xmlFiles importOpts.destPathIO
+        xmlEndTime <- getCurrentTime
+        putStrLn $ "@[importerCmd] handleXmlFiles time: " <> show (diffUTCTime xmlEndTime xmlStartTime)
         putStrLn $ "nbr potFiles: " <> show (length potFiles)
-        potRez <- if importOpts.noLocalesIO then
+        locDefs <- if importOpts.noLocalesIO then
           pure Mp.empty
-        else
-          handlePotFiles potFiles importOpts.destPathIO
-        pure (xmlRez, potRez)
+        else do
+          potStartTime <- getCurrentTime
+          potRez <- handlePotFiles potFiles importOpts.destPathIO
+          potEndTime <- getCurrentTime
+          putStrLn $ "@[importerCmd] handlePotFiles time: " <> show (diffUTCTime potEndTime potStartTime)
+          pure potRez
+        pure (xmlRez, locDefs)
     let
       (_, clInstances, _) = xmlDefs
+
 
     let
       !pyFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == PyFile ]
     putStrLn $ "nbr pyFiles:  " <> show (length pyFiles)
+    pyStartTime <- getCurrentTime
     logicDefs <- handlePyFiles pyFiles importOpts.destPathIO
-    genStartTime <- getCurrentTime
+    pyEndTime <- getCurrentTime
+    putStrLn $ "@[importerCmd] handlePyFiles time: " <> show (diffUTCTime pyEndTime pyStartTime)
+    let
+      eiTableDefs = concatMap Sq.genTableDefs [ snd anElement | anElement <- logicDefs ]
+    case rights eiTableDefs of
+      [] -> putStrLn $ "@[importerCmd] no table, genTableDefs errs: " <> L.intercalate "\n" (lefts eiTableDefs)
+      tableDefs -> do
+        let
+          tableMap = Mp.fromList [(T.decodeUtf8 aTable.nameST, aTable) | aTable <- tableDefs]
 
-    unless importOpts.noAppIO $ do
-      rez <- Ew.generateApp importOpts.destPathIO xmlDefs locales logicDefs
-      pure ()
+        unless importOpts.noAppIO $ do
+          genStartTime <- getCurrentTime
+          rez <- Ew.generateApp importOpts.destPathIO xmlDefs tableMap locales logicDefs
+          genEndTime <- getCurrentTime
+          putStrLn $ "@[importerCmd] generateApp time: " <> show (diffUTCTime genEndTime genStartTime)
+          pure ()
 
-    when importOpts.schemaIO $ do
-      rez <- Sq.genSchemas importOpts.destPathIO logicDefs
-      case rez of
-        Left err -> putStrLn $ "@[importerCmd] genSchemas err: " <> err
-        Right _ -> pure ()
-    when importOpts.bootstrapIO $
-      Sq.genBootstrap importOpts.destPathIO clInstances
-
-    genEndTime <- getCurrentTime
-    putStrLn $ "@[importerCmd] time to generate: " <> show (diffUTCTime genEndTime genStartTime)
+        if importOpts.schemaIO then do
+          Sq.genSchemas importOpts.destPathIO tableDefs
+          when importOpts.dataPrepIO $
+            if importOpts.noAppIO then
+              putStrLn "@[importerCmd] data prep needs app parsing, don't use --noapp."
+            else
+              Dp.genBootstrap importOpts.destPathIO tableMap clInstances
+        else when importOpts.dataPrepIO $
+          let
+            eiTableDefs = concatMap Sq.genTableDefs [ snd anElement | anElement <- logicDefs ]
+          in
+          case rights eiTableDefs of
+            [] -> putStrLn $ "@[importerCmd] genTableDefs errs: " <> L.intercalate "\n" (lefts eiTableDefs)
+            sqlTables ->
+              Dp.genBootstrap importOpts.destPathIO tableMap clInstances
     pure ()
 
 

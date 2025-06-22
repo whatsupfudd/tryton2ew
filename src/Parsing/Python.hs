@@ -310,7 +310,11 @@ extractStringLiteral expr =
     _ -> []
 
 removeQuotes :: Bs.ByteString -> Bs.ByteString
-removeQuotes = Bs.dropWhileEnd (== 39) . Bs.dropWhile (== 39)
+removeQuotes aString =
+  if Bs.isPrefixOf "\'" aString then 
+    Bs.dropWhileEnd (== 39) . Bs.dropWhile (== 39) $ aString
+  else 
+    Bs.dropWhileEnd (== 34) . Bs.dropWhile (== 34) $ aString
 
 {-
 The AST defines the expressions as:

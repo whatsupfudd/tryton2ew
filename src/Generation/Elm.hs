@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Generation.Elm where
 
 import qualified Data.ByteString as Bs
@@ -14,6 +15,7 @@ data FunctionDef = FunctionDef {
   , typeDef :: TypeDef
   , argsFD :: [Text]
   , bodyFD :: ElmExpr
+  , events :: [Text]
   }
   deriving (Show)
 
@@ -34,6 +36,8 @@ data ElmExpr =
   | ApplyEE Text [ElmExpr]
   | LetEE [(Text, ElmExpr)] ElmExpr
   | IfEE ElmExpr ElmExpr ElmExpr
+  | ArrayEE [ElmExpr]
+  | ArrayAttribEE [AttributeHt]
   | TupleEE [ElmExpr]
   | RecordEE [(Text, ElmExpr)]
   | CaseEE ElmExpr [(Text, [ElmExpr])]
@@ -41,7 +45,9 @@ data ElmExpr =
   | LiteralEE ElmLiteral
   -- Specialized function application, for predefined Html functions.
   | HtEE ElementHt [AttributeHt] [ElmExpr]
+  | ComplexHtEE ElementHt ElmExpr [ElmExpr]
   deriving (Show)
+
 
 data ElmLiteral =
   StringL Text
@@ -93,6 +99,7 @@ data AttributeHt =
   | ValueHA ElmExpr
   | HrefHA ElmExpr
   | ScopeHA ElmExpr
+  | TitleHA ElmExpr
   deriving (Show)
 
 -- (HtEE DivHE) [HtEE ClassHA "container"] [(HtEE TextHE) "Hello"]
@@ -180,6 +187,40 @@ svg attribs children = HtEE (SvgHE (Sv.SvgSV attribs children)) [] []
 nav :: [AttributeHt] -> [ElmExpr] -> ElmExpr
 nav = HtEE NavHE
 
+-- Htmx:
+
+strL :: ElmExpr -> ElmExpr
+strL aExpr = ApplyEE "Ht.strL" [aExpr]
+
+intL :: Int -> ElmExpr
+intL aInt = ApplyEE "Ht.intL" [LiteralEE (IntL aInt)]
+
+
+htInvoke :: ElementHt -> Text -> Text -> [(Text, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
+htInvoke = genericHtInvoker "Ht.invoke"
+
+
+htInvokeWithSwap :: ElementHt -> Text -> Text -> [(Text, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
+htInvokeWithSwap = genericHtInvoker "Ht.invokeWithSwap"
+
+
+genericHtInvoker :: Text -> ElementHt -> Text -> Text -> [(Text, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
+genericHtInvoker fctName eleHt targetID fctID params attribs =
+  ComplexHtEE eleHt (ApplyEE fctName [
+    LiteralEE (StringL targetID), LiteralEE (StringL fctID)
+    , makeHxParams params, ArrayAttribEE attribs
+  ])
+
+makeHxParams :: [(Text, ElmExpr)] -> ElmExpr
+makeHxParams params =
+  ArrayEE (map makeHxParam params)
+
+makeHxParam :: (Text, ElmExpr) -> ElmExpr
+makeHxParam (aName, aParam) =
+  TupleEE [LiteralEE (StringL aName), aParam]
+
+
+
 -- Attributes:
 class_ :: Text -> AttributeHt
 class_ aText = ClassHA (LiteralEE (StringL aText))
@@ -211,6 +252,9 @@ href aText = HrefHA (LiteralEE (StringL aText))
 scope :: Text -> AttributeHt
 scope aText = ScopeHA (LiteralEE (StringL aText))
 
+title :: Text -> AttributeHt
+title aText = TitleHA (LiteralEE (StringL aText))
+
 -- Show a function definition:
 spitFct :: FunctionDef -> Bs.ByteString
 spitFct aFct = T.encodeUtf8 aFct.nameFD <> " =\n" <> tabBy 1 (spitElm 1 aFct.bodyFD)
@@ -223,6 +267,8 @@ spitElm level (LambdaEE varNames aExpr) = "(\\" <> Bs.intercalate " " (map T.enc
 spitElm level (ApplyEE aName aExprs) = T.encodeUtf8 aName <> (if null aExprs then "" else " " <> Bs.intercalate " " (map (spitElm (level + 1)) aExprs))
 spitElm level (LetEE aBindings aExpr) = "let\n" <> Bs.intercalate "\n" (map (tabBy (level + 1) . spitBinding (level + 1)) aBindings) <> "\n" <> tabBy level "in\n" <> tabBy level (spitElm (level + 1) aExpr)
 spitElm level (IfEE testExpr trueExpr falseExpr) = "if " <> spitElm level testExpr <> " then\n" <> tabBy (level + 1) (spitElm level trueExpr) <> "\n" <> tabBy level "else\n" <> tabBy (level + 1) (spitElm level falseExpr)
+spitElm level (ArrayEE aExprs) = "[" <> Bs.intercalate ", " (map (spitElm level) aExprs) <> "]"
+spitElm level (ArrayAttribEE aAttributes) = "[" <> Bs.intercalate ", " (map spitAttribute aAttributes) <> "]"
 spitElm level (TupleEE aExprs) = "(" <> Bs.intercalate ", " (map (spitElm level) aExprs) <> ")"
 spitElm level (RecordEE aFields) = "{ " <> Bs.intercalate ", " (map (spitField level) aFields) <> " }"
 spitElm level (CaseEE aExpr aCases) = "case " <> spitElm level aExpr <> " of\n" <> Bs.intercalate "\n" (map (tabBy (level + 1) . spitCase (level + 1)) aCases)
@@ -232,39 +278,11 @@ spitElm level (HtEE aHt aAttributes aChildren)
   | aHt == TextHE = "text " <> spitElm (level + 1) (head aChildren)
   | SvgHE svgExpr <- aHt = Sv.spitSvExpr (level + 1) svgExpr
   | otherwise =
-    let
-      aHtStr = case aHt of
-        DivHE -> "div"
-        TextHE -> "text"
-        InputHE -> "input"
-        ButtonHE -> "button"
-        SelectHE -> "select"
-        OptionHE -> "option"
-        LabelHE -> "label"
-        SpanHE -> "span"
-        ImgHE -> "img"
-        AHE -> "a"
-        FormHE -> "H.form"
-        TableHE -> "table"
-        TdHE -> "td"
-        ThHE -> "th"
-        TrHE -> "tr"
-        TbodyHE -> "tbody"
-        TheadHE -> "thead"
-        SectionHE -> "section"
-        UlHE -> "ul"
-        LiHE -> "li"
-        H1HE -> "h1"
-        H2HE -> "h2"
-        H3HE -> "h3"
-        H4HE -> "h4"
-        H5HE -> "h5"
-        H6HE -> "h6"
-        NavHE -> "nav"
-        -- If this is a 'pattern match redundant' warning, then all elements in the Sum type are covered:
-        _ -> error "Unknown element"
-    in
-    aHtStr <> " [" <> Bs.intercalate ", " (map spitAttribute aAttributes) <> "] [" <> Bs.intercalate ", " (map (spitElm (level + 1)) aChildren) <> "]"
+      elementToText aHt <> " [" <> Bs.intercalate ", " (map spitAttribute aAttributes) <> "] ["
+        <> Bs.intercalate ", " (map (spitElm (level + 1)) aChildren) <> "]"
+spitElm level (ComplexHtEE eleHt aExpr aChildren) =
+  elementToText eleHt <> " (" <> spitElm (level + 1) aExpr <> ") ["
+    <> Bs.intercalate ", " (map (spitElm (level + 1)) aChildren) <> "]"
 
 
 spitBinding :: Int -> (Text, ElmExpr) -> Bs.ByteString
@@ -294,8 +312,44 @@ spitAttribute attrib =
     ValueHA aValue -> "value " <> spitElm 0 aValue
     HrefHA aHref -> "href " <> spitElm 0 aHref
     ScopeHA aScope -> "scope " <> spitElm 0 aScope
+    TitleHA aTitle -> "title " <> spitElm 0 aTitle
     -- If this is 'pattern match redundant' warning, all attributes are covered.
     _ -> ""
+
+
+elementToText :: ElementHt -> Bs.ByteString
+elementToText = \case
+  DivHE -> "div"
+  TextHE -> "text"
+  InputHE -> "input"
+  ButtonHE -> "button"
+  SelectHE -> "select"
+  OptionHE -> "option"
+  LabelHE -> "label"
+  SpanHE -> "span"
+  ImgHE -> "img"
+  AHE -> "a"
+  FormHE -> "H.form"
+  TableHE -> "table"
+  TdHE -> "td"
+  ThHE -> "th"
+  TrHE -> "tr"
+  TbodyHE -> "tbody"
+  TheadHE -> "thead"
+  SectionHE -> "section"
+  UlHE -> "ul"
+  LiHE -> "li"
+  H1HE -> "h1"
+  H2HE -> "h2"
+  H3HE -> "h3"
+  H4HE -> "h4"
+  H5HE -> "h5"
+  H6HE -> "h6"
+  NavHE -> "nav"
+  -- This should never happen:
+  SvgHE _ -> "svg"
+  -- If this is a 'pattern match redundant' warning, then all elements in the Sum type are covered:
+  _ -> error "Unknown element"
 
 
 tabBy :: Int -> Bs.ByteString -> Bs.ByteString

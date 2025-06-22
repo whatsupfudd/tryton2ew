@@ -26,7 +26,7 @@ data ImporterOptions = ImporterOptions {
   inPathIO :: FilePath
   , destPathIO :: FilePath
   , schemaIO :: Bool
-  , bootstrapIO :: Bool
+  , dataPrepIO :: Bool
   , noAppIO :: Bool
   , noLocalesIO :: Bool
   }
@@ -118,9 +118,9 @@ importerOpts =
                   <> help "Generate DB schemas from Python definitions."
                 )
               <*> switch (
-                  long "bootstrap"
-                  <> short 'b'
-                  <> help "Generate DB bootstrap data from XML definitions."
+                  long "dataprep"
+                  <> short 'p'
+                  <> help "Generate DB data prep from XML definitions."
                 )
               <*> switch (
                   long "noapp"

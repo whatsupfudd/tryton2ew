@@ -33,7 +33,8 @@ genTree vName tElements =
     nameFD = vName
   , typeDef = E.StringTD
   , argsFD = []
-  , bodyFD = tableBuilder columns
+  , bodyFD = tableBuilder (vName <> "_fetch") columns
+  , events = [vName <> "_fetch"]
   }
 
 
@@ -68,11 +69,12 @@ genForm vName aForm =
   , typeDef = E.StringTD
   , argsFD = []
   , bodyFD = E.form [E.class_ "form" ] []
+  , events = [vName <> "_insert"]
   }
 
 
-tableBuilder :: [E.ElmExpr] -> E.ElmExpr
-tableBuilder columns =
+tableBuilder :: T.Text -> [E.ElmExpr] -> E.ElmExpr
+tableBuilder tbodyMid columns =
   E.div
     [ E.class_ "mx-auto max-w-screen-xl px-4 lg:px-12"
     ]
@@ -256,7 +258,7 @@ tableBuilder columns =
                                     [ E.for_ "apple"
                                     , E.class_ "ml-2 text-sm font-medium text-gray-900 dark:text-gray-100"
                                     ]
-                                    [ E.text "Apple (56)" ]
+                                    [ E.text "First Value" ]
                                 ]
                             , E.li
                                 [ E.class_ "flex items-center"
@@ -272,55 +274,7 @@ tableBuilder columns =
                                     [ E.for_ "fitbit"
                                     , E.class_ "ml-2 text-sm font-medium text-gray-900 dark:text-gray-100"
                                     ]
-                                    [ E.text "Microsoft (16)" ]
-                                ]
-                            , E.li
-                                [ E.class_ "flex items-center"
-                                ]
-                                [ E.input
-                                    [ E.id "razor"
-                                    , E.type_ "checkbox"
-                                    , E.value ""
-                                    , E.class_ "w-4 h-4 bg-gray-100 border-gray-300 rounded text-primary-600 focus:ring-primary-500 dark:focus:ring-primary-600 dark:ring-offset-gray-700 focus:ring-2 dark:bg-gray-600 dark:border-gray-500"
-                                    ]
-                                    []
-                                , E.label
-                                    [ E.for_ "razor"
-                                    , E.class_ "ml-2 text-sm font-medium text-gray-900 dark:text-gray-100"
-                                    ]
-                                    [ E.text "Razor (49)" ]
-                                ]
-                            , E.li
-                                [ E.class_ "flex items-center"
-                                ]
-                                [ E.input
-                                    [ E.id "nikon"
-                                    , E.type_ "checkbox"
-                                    , E.value ""
-                                    , E.class_ "w-4 h-4 bg-gray-100 border-gray-300 rounded text-primary-600 focus:ring-primary-500 dark:focus:ring-primary-600 dark:ring-offset-gray-700 focus:ring-2 dark:bg-gray-600 dark:border-gray-500"
-                                    ]
-                                    []
-                                , E.label
-                                    [ E.for_ "nikon"
-                                    , E.class_ "ml-2 text-sm font-medium text-gray-900 dark:text-gray-100"
-                                    ]
-                                    [ E.text "Nikon (12)" ]
-                                ]
-                            , E.li
-                                [ E.class_ "flex items-center"
-                                ]
-                                [ E.input
-                                    [ E.id "benq"
-                                    , E.type_ "checkbox"
-                                    , E.value ""
-                                    , E.class_ "w-4 h-4 bg-gray-100 border-gray-300 rounded text-primary-600 focus:ring-primary-500 dark:focus:ring-primary-600 dark:ring-offset-gray-700 focus:ring-2 dark:bg-gray-600 dark:border-gray-500"
-                                    ]
-                                    []
-                                , E.label
-                                    [ E.for_ "benq"
-                                    , E.class_ "ml-2 text-sm font-medium text-gray-900 dark:text-gray-100"
-                                    ]
-                                    [ E.text "BenQ (74)" ]
+                                    [ E.text "Second Value" ]
                                 ]
                             ]
                         ]
@@ -338,7 +292,9 @@ tableBuilder columns =
                       ]
                       [
                         E.tr [] columns
-                      , E.tbody [ E.id "tbody"] []
+                      , E.tbody [ E.id "tbody"] [
+
+                        ]
                       ]
                   ]
               ]
@@ -346,7 +302,12 @@ tableBuilder columns =
               [ E.class_ "flex flex-col md:flex-row justify-between items-start md:items-center space-y-3 md:space-y-0 p-4"
               , E.attribute "aria-label" "Table navigation"
               ]
-              [ E.span
+              [
+                E.htInvoke E.AHE "tbody" tbodyMid [("offset", E.intL 0)] [
+                      E.title ""
+                    , E.class_ "flex items-center mt-4 gap-1 font-medium text-primary-700 hover:text-primary-600 hover:underline dark:text-primary-500 dark:hover:text-primary-400"
+                  ] [ E.text " Load Table " ]
+              , E.span
                   [ E.class_ "text-sm font-normal text-gray-500 dark:text-gray-400"
                   ]
                   [ E.text " Showing ", E.span
