@@ -139,11 +139,15 @@ resultParser rezParser =
 
 type alias FetchArgs = {
     offset : Int
+    , limit : String
   }
+
 
 fetchParser : Dec.Decoder FetchArgs
 fetchParser =
-  Dec.map FetchArgs (Dec.field "offset" Dec.int)
+  Dec.map2 FetchArgs
+    (Dec.field "offset" Dec.int)
+    (Dec.field "limit" Dec.string)
 
 hsContName_1 = "|]
 
@@ -157,8 +161,17 @@ hsFetchRows fetchArgs = {
   -- Add hsForward function name.
     templ_3 = [r|"
     , rcpt = hsContName_1
-    , params = Enc.object [ ("offset", Enc.int fetchArgs.offset), ("limit", Enc.int 25) ]
+    , params = Enc.object [ ("offset", Enc.int fetchArgs.offset), ("limit", Enc.int (limitNameToInt fetchArgs.limit)) ]
   }
+
+limitNameToInt : String -> Int
+limitNameToInt limitName =
+  case limitName of
+    "s1" -> 15
+    "s2" -> 25
+    "s3" -> 50
+    "s4" -> 100
+    _ -> 25
 
 
 continuations : List (String, CompContinuation msgT)
@@ -187,10 +200,9 @@ default _ jsonParams =
       ExecNative <| hsFetchRows localArgs
 
 -- TODO: implement the real record type:
-type alias HsRow = {
-    f1 : String
-    , f2 : Int
-  }
+type alias HsRow = {|]
+    -- Add the fields of the HsRow record.
+    templ_6 = [r|}
 
 
 bodyParser : Dec.Decoder (List HsRow)
@@ -202,8 +214,8 @@ hsRowParser : Dec.Decoder HsRow
 hsRowParser =
   |]
 
-    -- Add all fields to parse from hsForward result: Dec.field "field" bodyParser
-    templ_6 = [r|
+    -- Add the parser for all the fields of a hsForward result:
+    templ_7 = [r|
 
 showBodyCt : CompContinuation msgT
 showBodyCt _ jsonParams =
@@ -214,7 +226,7 @@ showBodyCt _ jsonParams =
           [ text <| "@[|]
 
     -- Add component name.
-    templ_7 = [r|.showBodyCt]: error in params: " ++ Dec.errorToString err ]
+    templ_8 = [r|.showBodyCt]: error in params: " ++ Dec.errorToString err ]
       ]
     Ok tRows -> Forward <| showTableRows tRows
 
@@ -225,16 +237,41 @@ showTableRows someRows = []
     componentName = T.encodeUtf8 $ T.toLower component.moduleName
     hsForwardFct = "hs_" <> componentName <> "_fetch"
     -- TODO: do a real encoding of the View fields:
-    fieldDefs = ["field_1", "field_2"]
-    fieldsDecoders = Bs.intercalate "\n  " ["(Dec.field \"field_1\" Dec.string)", "(Dec.field \"field_2\" Dec.int)"]
+    fieldDefs = [("field_1", "String"), ("field_2", "Int")]
   in
   "module Components." <> T.encodeUtf8 component.moduleName
-  <> Bs.concat [templ_1, hsForwardFct, templ_2, componentName, templ_3
-        , componentName, templ_4, componentName, templ_5, "Dec.map" <> (T.encodeUtf8 . T.pack . show) (length fieldDefs) <> " HsRow\n    " <> fieldsDecoders
-        , templ_6, componentName, templ_7
+  <> Bs.concat [templ_1, hsForwardFct, templ_2
+        , componentName, templ_3
+        , componentName, templ_4
+        , componentName, templ_5
+        , buildHsFields fieldDefs, templ_6
+        , buildHsRowFields fieldDefs, templ_7
+        , componentName, templ_8
       ]
   <> Bs.intercalate "\n\n" (map E.spitFct component.functions)
  -- <> T.encodeUtf8 component.moduleName <> "\" ]]\n"
+
+
+buildHsFields :: [(Bs.ByteString, Bs.ByteString)] -> Bs.ByteString
+buildHsFields fieldDefs = Bs.intercalate "\n    , " [ fst aField <> " : " <> snd aField | aField <- fieldDefs ]
+
+
+buildHsRowFields :: [(Bs.ByteString, Bs.ByteString)] -> Bs.ByteString
+buildHsRowFields fieldDefs =
+  "Dec.map" <> (T.encodeUtf8 . T.pack . show) (length fieldDefs)
+  <> " HsRow\n    "
+  <> Bs.intercalate "\n    " (map fieldDecoder fieldDefs)
+
+
+fieldDecoder :: (Bs.ByteString, Bs.ByteString) -> Bs.ByteString
+fieldDecoder (fieldName, fieldType) = "(Dec.field \"" <> fieldName <> "\" " <> typeDecoder fieldType <> ")"
+
+
+typeDecoder :: Bs.ByteString -> Bs.ByteString
+typeDecoder fieldType = case fieldType of
+  "String" -> "Dec.string"
+  "Int" -> "Dec.int"
+  _ -> "Dec.string"
 
 
 genFunction :: T.Text -> Maybe ActionWindow -> [E.FunctionDef]
@@ -266,9 +303,12 @@ genFunction refID mbActionWin =
         E.FunctionDef {
           nameFD = "demoFct"
           , argsFD = []
-          , typeDef = E.StringTD
+          , typeDef = E.MonadTD "H.Html" (E.VarTD "msg")
           , bodyFD = E.div [E.class_ "bg-gray-50 dark:bg-gray-900 p-4 md:ml-64 lg:mr-16 min-h-full pt-20" ] $ case subFcts of
-              [] -> [ E.div [E.class_ "text-red-500" ] [ E.text actionWin.logicNameAW ] ]
+              [] -> [ E.div [E.class_ "text-red-500" ] [
+                        E.text actionWin.logicNameAW
+                      , E.text "No view nor form defined."
+                    ]]
               _ -> [
                 E.div [ E.class_ "mx-auto max-w-screen-xl px-4 lg:px-12" ]
                   ([ E.div [ E.class_ "flex justify-between items-center mb-4" ]
@@ -277,9 +317,9 @@ genFunction refID mbActionWin =
                       [ E.button [ E.class_ "bg-gray-500 text-white px-4 py-2 rounded-md" ] [ E.text "Refresh" ] ]
                     ]
                   ]
-                  <> [ E.ApplyEE aFct.nameFD [] | aFct <- subFcts ]
+                  <> [ E.ApplyEE aFct.nameFD [] | (aFct, _) <- subFcts ]
                   )
                 ]
-          , events = concat [ aFct.events | aFct <- subFcts ]
+          , events = concat [ aFct.events <> bFct.events | (aFct, bFct) <- subFcts ]
         }    
-      ] <> subFcts
+      ] <> concat [ [aFct, bFct] | (aFct, bFct) <- subFcts ]

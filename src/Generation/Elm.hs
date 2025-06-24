@@ -15,9 +15,17 @@ data FunctionDef = FunctionDef {
   , typeDef :: TypeDef
   , argsFD :: [Text]
   , bodyFD :: ElmExpr
-  , events :: [Text]
+  , events :: [EventDef]
   }
   deriving (Show)
+
+
+data EventDef = EventDef {
+  midED :: Text
+  , targetED :: Text
+  }
+  deriving (Show)
+
 
 data TypeDef =
   StringTD
@@ -27,6 +35,7 @@ data TypeDef =
   | RecordTD [(Text, TypeDef)]
   | MonadTD Text TypeDef
   | ApplicTD TypeDef TypeDef
+  | VarTD Text
   deriving (Show)
 
 
@@ -189,8 +198,8 @@ nav = HtEE NavHE
 
 -- Htmx:
 
-strL :: ElmExpr -> ElmExpr
-strL aExpr = ApplyEE "Ht.strL" [aExpr]
+strL :: Text -> ElmExpr
+strL aText = ApplyEE "Ht.strL" [LiteralEE (StringL aText)]
 
 intL :: Int -> ElmExpr
 intL aInt = ApplyEE "Ht.intL" [LiteralEE (IntL aInt)]

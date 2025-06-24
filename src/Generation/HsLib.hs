@@ -15,12 +15,13 @@ import qualified Parsing.Python as Py
 import qualified Generation.Sql as Sq
 import qualified Generation.EwTypes as Ew
 
+import Generation.Utils (upperSnake)
 
 genSqlFile :: FilePath -> Bs.ByteString -> [Ew.SqlFct] -> IO ()
 genSqlFile dirPath moduleName sqlFcts =
   let
-    filePath = dirPath </> (T.unpack . T.decodeUtf8) moduleName <> ".hs"
-    modDef = "module Lib." <> moduleName <> " where\n"
+    filePath = dirPath </> (T.unpack . T.decodeUtf8 . upperSnake) moduleName <> ".hs"
+    modDef = "module Lib." <> upperSnake moduleName <> " where\n"
     tmpl_imports =[r|
 import qualified Data.ByteString as Bs
 import Data.Int (Int16, Int32, Int64)

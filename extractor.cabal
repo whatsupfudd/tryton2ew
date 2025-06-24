@@ -49,7 +49,6 @@ library
       Options.Runtime
       Parsing.Pot
       Parsing.Python
-      Parsing.Tryton
       Parsing.Xml
   other-modules:
       Paths_extractor
