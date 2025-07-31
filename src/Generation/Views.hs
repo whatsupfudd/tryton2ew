@@ -6,22 +6,23 @@ import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 
 import qualified Parsing.Xml as Xm
+import qualified Tryton.Types as Tm
 import qualified Generation.Elm as E
 import qualified Generation.Svg as Sv
 
 
 -- TODO: add return of errors to the caller.
-genTree :: T.Text -> [Xm.TreeElement] -> (E.FunctionDef, E.FunctionDef)
+genTree :: T.Text -> [Tm.TreeElement] -> (E.FunctionDef, E.FunctionDef)
 genTree vName tElements =
   let
     columns = foldr (\anElement accum -> case anElement of
-        Xm.FieldTE attribs nFixes ->
+        Tm.FieldTE attribs nFixes ->
           case procTreeFields attribs of
             Left err ->
               E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text (T.pack err) ] : accum
             Right (mbName, mbWidget, mbString) ->
               E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text (fromMaybe (fromMaybe "<no-name>" mbName) mbString) ] : accum
-        Xm.ButtonTE attribs ->
+        Tm.ButtonTE attribs ->
           case procTreeButton attribs of
             Left err ->
               E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text (T.pack err) ] : accum
@@ -47,7 +48,7 @@ genTree vName tElements =
   in
   ( tableFct, tRowFct )
 
-procTreeFields :: [Xm.Attribute] -> Either String (Maybe T.Text, Maybe T.Text, Maybe T.Text)
+procTreeFields :: [Tm.Attribute] -> Either String (Maybe T.Text, Maybe T.Text, Maybe T.Text)
 procTreeFields =
   foldM (\(mbName, mbWidget, mbString) anAttrib -> case anAttrib.nameA of
       "name" -> Right (Just anAttrib.valueA, mbWidget, mbString)
@@ -61,7 +62,7 @@ procTreeFields =
     ) (Nothing, Nothing, Nothing)
 
 
-procTreeButton :: [Xm.Attribute] -> Either String (Maybe T.Text, Maybe T.Text, Maybe T.Text)
+procTreeButton :: [Tm.Attribute] -> Either String (Maybe T.Text, Maybe T.Text, Maybe T.Text)
 procTreeButton =
   foldM (\(mbName, mbHelp, mbString) anAttrib -> case anAttrib.nameA of
       "name" -> Right (Just anAttrib.valueA, mbHelp, mbString)
@@ -71,7 +72,7 @@ procTreeButton =
     ) (Nothing, Nothing, Nothing)
 
 
-genForm :: T.Text -> Xm.FormElement -> E.FunctionDef
+genForm :: T.Text -> Tm.FormElement -> E.FunctionDef
 genForm vName aForm =
   let
     (content, events) = formBuilder vName aForm
@@ -85,7 +86,7 @@ genForm vName aForm =
   }
 
 
-formBuilder :: T.Text -> Xm.FormElement -> (E.ElmExpr, [E.EventDef])
+formBuilder :: T.Text -> Tm.FormElement -> (E.ElmExpr, [E.EventDef])
 formBuilder eventPrefix aForm =
   let
     formEvent = E.EventDef (eventPrefix <> "_fResult") (eventPrefix <> "_addItem")

@@ -9,8 +9,8 @@ import qualified Data.Text.Encoding as T
 
 import Text.RawString.QQ (r)
 
+import qualified Tryton.Types as Tm
 import qualified Generation.Elm as E
-import qualified Parsing.Xml as Xm
 import qualified Generation.Views as Vw
 import Generation.EwTypes
 
@@ -19,13 +19,18 @@ leftPartAItems :: [Menu] -> Bs.ByteString
 leftPartAItems menus =
   let
     templ_1 = [r|module Protected.LeftMenuNav exposing (leftPartAItems)
+
+import Html.String exposing (..)
+import Html.String as H
+import Html.String.Attributes exposing (..)
+
 import Protected.LeftMenuDef exposing (ItemLA (..))
 
 leftPartAItems : List (ItemLA msg)
 leftPartAItems = [|]
   in
   templ_1
-    <> "\n" <> genMenus 0 menus
+    <> "\n" <> genMenus 1 menus
     <> "\n  ]"
 
 
@@ -294,9 +299,9 @@ genFunction refID mbActionWin =
       let
         subFcts = foldl (\accum (vName, viewDef) ->
             case viewDef of
-              Xm.TreeDF attribs elements ->
+              Tm.TreeDF attribs elements ->
                 Vw.genTree vName elements : accum
-              Xm.FormDF {} -> accum
+              Tm.FormDF {} -> accum
           ) [] (Mp.toList actionWin.uiViewsAW)
       in
       [

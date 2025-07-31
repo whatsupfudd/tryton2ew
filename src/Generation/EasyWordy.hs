@@ -15,9 +15,9 @@ import qualified Data.Text.Encoding as T
 
 import System.FilePath ((</>))
 
-import qualified Parsing.Xml as Xm
 import qualified Parsing.Pot as Po
 import qualified Parsing.Python as Pp
+import qualified Tryton.Types as Tm
 import qualified Generation.Elm as E
 import qualified Generation.Views as Vw
 import qualified Generation.Fuddle as Fd
@@ -28,7 +28,7 @@ import Generation.EwTypes
 import qualified Generation.Utils as Ut
 
 
-type UiDefs = ([Xm.MenuItem], Mp.Map T.Text [Xm.ClassInstance], Xm.ViewDefs)
+type UiDefs = ([Tm.MenuItem], Mp.Map T.Text [Tm.ClassInstance], Tm.ViewDefs)
 
 {-
 Need to generate:
@@ -50,9 +50,51 @@ Need to generate:
   - SQL manipulation functions in for EW internal API (.hs) for each ModelView found in the .py files.
 -}
 
+generateApp :: FilePath -> Tm.TrytonApp -> IO (Either String ())
+generateApp destPath tApp =
+  let
+    allInstances = Mp.fromList $ [(T.pack m.srcModuleFM.nameMT, m.actWinsFM) | m <- tApp.modulesTA]
+    uiDefs = (tApp.unifiedMenuTA, allInstances, Tm.emptyViewDefs)
+    consoLocales = Mp.empty
+  in
+  case genLeftMenu uiDefs Mp.empty of
+    Left err -> do
+      pure $ Left err
+    Right leftMenus ->
+      let
+        renderedMenus = Fd.leftPartAItems leftMenus
+        allInfo = map (\m -> 
+            let
+              ttSqlModels = foldl (\accum anElement ->
+                  case anElement of
+                    Pp.ModelEl trytonModel ->
+                      case Mp.lookup "__name__" trytonModel.fields of
+                        Just aName -> case aName.value of
+                          Pp.LiteralEx (Pp.StringLit str) -> Mp.insert (T.decodeUtf8 (Bs.drop 1 . Bs.init . mconcat $ str)) trytonModel accum
+                          _ -> accum
+                        Nothing -> accum
+                    _ -> accum
+                ) Mp.empty (concat $ Mp.elems m.logicFM)
+              (actWinMap, iconMap, someStrs) = scanInstances ttSqlModels (fromMaybe Tm.emptyViewDefs m.viewDefsFM) m.actWinsFM
+              sqlOps = Hs.genSqlOps m.sqlDefsFM ttSqlModels
+              components = genComponents actWinMap (fromMaybe Tm.emptyViewDefs m.viewDefsFM) leftMenus sqlOps consoLocales
+            in (sqlOps, iconMap, components)
+          ) tApp.modulesTA
+        (sqlOps, iconMap, components) = unzip3 allInfo
+      in do
+      TIO.writeFile (destPath </> "wapp/Protected/LeftMenuNav.elm") (T.decodeUtf8 renderedMenus)
+      mapM_ (\(fName, (fetchOp, insertOp)) -> do
+          putStrLn $ "@[generateApp] genSqlFile: " <> T.unpack fName
+          Hs.genSqlFile (destPath </> "HsLib") (Sq.modelToSqlName (T.encodeUtf8 fName)) [fetchOp, insertOp]) (Mp.toList $ Mp.unions sqlOps)
+      mapM_ (\aComp -> do
+          putStrLn $ "@[generateApp] saveComponent: " <> T.unpack aComp.refID
+          saveComponent destPath aComp
+        ) (concat components)
+      pure $ Right ()
 
-generateApp :: FilePath -> UiDefs -> Mp.Map T.Text Sq.SqlTable -> Po.LocaleDefs -> [(FilePath, [Pp.LogicElement])] -> IO (Either String ())
-generateApp destPath uiDefs@(_, classInstances, viewDefs) tableMap locales logicElements =
+
+generateAppV0 :: FilePath -> UiDefs -> Mp.Map T.Text Sq.SqlTable -> Po.LocaleDefs -> [(FilePath, [Pp.LogicElement])] -> IO (Either String ())
+generateAppV0 destPath uiDefs@(_, classInstances, viewDefs) tableMap locales logicElements =
   let
     consoLocales = consolidateLocales locales
     eiLeftMenuNav = genLeftMenu uiDefs consoLocales
@@ -101,14 +143,14 @@ generateApp destPath uiDefs@(_, classInstances, viewDefs) tableMap locales logic
 data Pass1Accum = Pass1Accum {
   actWindowsP1 :: Mp.Map T.Text ActionWindow
   , iconsP1 :: Mp.Map T.Text IconDef
-  , actDomainsP1 ::[Xm.ClassInstance]
-  , actViewsP1 :: [Xm.ClassInstance]
-  , irUiViewP1 :: [Xm.ClassInstance]
+  , actDomainsP1 ::[Tm.ClassInstance]
+  , actViewsP1 :: [Tm.ClassInstance]
+  , irUiViewP1 :: [Tm.ClassInstance]
   }
   deriving (Show)
 
 
-scanInstances :: Mp.Map T.Text Pp.TrytonModel -> Xm.ViewDefs -> [Xm.ClassInstance] -> (Mp.Map T.Text ActionWindow, Mp.Map T.Text IconDef, [String])
+scanInstances :: Mp.Map T.Text Pp.TrytonModel -> Tm.ViewDefs -> [Tm.ClassInstance] -> (Mp.Map T.Text ActionWindow, Mp.Map T.Text IconDef, [String])
 scanInstances logicMap viewDefs instances =
   let
     (p1Accum, p1Errs) = scanInstancePass1 instances
@@ -126,7 +168,7 @@ scanInstances logicMap viewDefs instances =
 
 
 -- Transforms ClassInstances into ActionWIndows and Icons.
-scanInstancePass1 :: [Xm.ClassInstance] -> (Pass1Accum, [String])
+scanInstancePass1 :: [Tm.ClassInstance] -> (Pass1Accum, [String])
 scanInstancePass1 classInstances =
   let
     initAccum = Pass1Accum {
@@ -156,7 +198,7 @@ scanInstancesPass2 p1Accum =
             (accum, newErr : errs)
           Just actWinField ->
             case actWinField.kindF of
-              Xm.ReferenceFK -> case Mp.lookup actWinField.valueF p1Accum.actWindowsP1 of
+              Tm.ReferenceFK -> case Mp.lookup actWinField.valueF p1Accum.actWindowsP1 of
                 Nothing ->
                   let
                     newErr = "No act_window for domain: " <> show aDomain
@@ -186,7 +228,7 @@ scanInstancesPass2 p1Accum =
           (accum, newErr : errs)
         Just actWinField ->
           case actWinField.kindF of
-            Xm.ReferenceFK -> case Mp.lookup actWinField.valueF accum of
+            Tm.ReferenceFK -> case Mp.lookup actWinField.valueF accum of
               Nothing ->
                 case Mp.lookup actWinField.valueF p1Accum.actWindowsP1 of
                   Just actWin ->
@@ -205,7 +247,7 @@ scanInstancesPass2 p1Accum =
               (accum, newErr : errs)
     ) domainConso p1Accum.actViewsP1
   where
-  makeValue :: (Mp.Map T.Text ActionWindow, [String]) -> ActionWindow -> Xm.Field -> Xm.ClassInstance -> (Mp.Map T.Text ActionWindow, [String])
+  makeValue :: (Mp.Map T.Text ActionWindow, [String]) -> ActionWindow -> Tm.Field -> Tm.ClassInstance -> (Mp.Map T.Text ActionWindow, [String])
   makeValue (accum, errs) actWin actWinField aView =
     case Mp.lookup "view" aView.fieldsDF of
       Nothing ->
@@ -215,14 +257,14 @@ scanInstancesPass2 p1Accum =
         (accum, newErr : errs)
       Just viewField ->
         case viewField.kindF of
-          Xm.ReferenceFK ->
+          Tm.ReferenceFK ->
             let
               newViewValue =
                 case Mp.lookup "sequence" aView.fieldsDF of
                   Nothing -> Right (viewField.valueF, 0)
                   Just sequenceField ->
                     case sequenceField.kindF of
-                      Xm.EvalFK -> Right (viewField.valueF, read $ T.unpack sequenceField.valueF)
+                      Tm.EvalFK -> Right (viewField.valueF, read $ T.unpack sequenceField.valueF)
                       _ -> Left $ "Unexpected sequence format in act_window.view: " <> show aView
             in
             case newViewValue of
@@ -240,7 +282,7 @@ scanInstancesPass2 p1Accum =
 
 
 -- Connects the ir.ui.views to the ActionWindows (based on the act_win.views relationships).
-scanInstancesPass3 :: Mp.Map T.Text ActionWindow -> [Xm.ClassInstance] -> (Mp.Map T.Text ActionWindow, [String])
+scanInstancesPass3 :: Mp.Map T.Text ActionWindow -> [Tm.ClassInstance] -> (Mp.Map T.Text ActionWindow, [String])
 scanInstancesPass3 actWinMap =
   foldl (\(accum, errs) aUiView ->
     case Mp.lookup "model" aUiView.fieldsDF of
@@ -253,7 +295,7 @@ scanInstancesPass3 actWinMap =
             (accum, newErr : errs)
           _ -> (accum, errs)
       Just modelField -> case modelField.kindF of
-        Xm.LabelFK ->
+        Tm.LabelFK ->
           case Mp.lookup modelField.valueF accum of
             Nothing ->
               let
@@ -276,7 +318,7 @@ scanInstancesPass3 actWinMap =
                       (accum, newErr : errs)
                     Just typeField ->
                       case typeField.kindF of
-                        Xm.LabelFK ->
+                        Tm.LabelFK ->
                           let
                             newValue = (nameField.valueF, typeField.valueF)
                             newActWin = actWin { viewModelLinksAW = Mp.insert aUiView.idDF newValue actWin.viewModelLinksAW }
@@ -292,7 +334,7 @@ scanInstancesPass3 actWinMap =
 
 
 -- Connects the ModelViews (python) and view definitions (../views/*.xml) to the ActionWindows (based on the ir.ui.view relationships extracted in pass 3)
-scanInstancesPass4 :: Mp.Map T.Text Pp.TrytonModel -> Xm.ViewDefs -> Mp.Map T.Text ActionWindow -> (Mp.Map T.Text ActionWindow, [String])
+scanInstancesPass4 :: Mp.Map T.Text Pp.TrytonModel -> Tm.ViewDefs -> Mp.Map T.Text ActionWindow -> (Mp.Map T.Text ActionWindow, [String])
 scanInstancesPass4 logicMap viewDefs actWinMap =
   let
     (updActWinMap, errs) = foldl (\(accum, errs) (k, anActWin) ->
@@ -301,8 +343,8 @@ scanInstancesPass4 logicMap viewDefs actWinMap =
           (uiViews, viewErrs) = foldl (\(accum, errs) (vName, vType) ->
               let
                 mbViewDef = case vType of
-                  "tree" -> uncurry Xm.TreeDF <$> Mp.lookup vName viewDefs.trees
-                  "form" -> uncurry Xm.FormDF <$> Mp.lookup vName viewDefs.forms
+                  "tree" -> uncurry Tm.TreeDF <$> Mp.lookup vName viewDefs.trees
+                  "form" -> uncurry Tm.FormDF <$> Mp.lookup vName viewDefs.forms
                   -- TODO: other kinds of views.
                   _ -> Nothing
               in
@@ -334,23 +376,23 @@ scanInstancesPass4 logicMap viewDefs actWinMap =
   (updActWinMap, errs)
 
 
-instanceToDomain :: Xm.ClassInstance -> Either String AwDomain
+instanceToDomain :: Tm.ClassInstance -> Either String AwDomain
 instanceToDomain anInstance =
   let
     eiName = case Mp.lookup "name" anInstance.fieldsDF of
       Nothing -> Left $ "No name for: " <> T.unpack anInstance.modelDF
       Just nameField -> case nameField.kindF of
-        Xm.LabelFK -> Right nameField.valueF
+        Tm.LabelFK -> Right nameField.valueF
         _ -> Left $ "Unexpected name format in instance: " <> show anInstance
     eiSequence = case Mp.lookup "sequence" anInstance.fieldsDF of
       Nothing -> Left $ "No sequence for: " <> show anInstance
       Just sequenceField -> case sequenceField.kindF of
-        Xm.EvalFK -> Right (read $ T.unpack sequenceField.valueF)
+        Tm.EvalFK -> Right (read $ T.unpack sequenceField.valueF)
         _ -> Left $ "Unexpected sequence format: " <> show sequenceField
     eiFilter = case Mp.lookup "domain" anInstance.fieldsDF of
       Nothing -> Right Nothing
       Just domainField -> case domainField.kindF of
-        Xm.EvalFK -> Right (Just domainField.valueF)
+        Tm.EvalFK -> Right (Just domainField.valueF)
         _ -> Left $ "Unexpected domain format in instance: " <> show anInstance
     lefties = fromLeft "" eiName <> fromLeft "" eiSequence <> fromLeft "" eiFilter
   in
@@ -363,7 +405,7 @@ instanceToDomain anInstance =
     _ -> Left $ "@[instanceToDomain] errors: " <> show lefties
 
 
-parseClassInstance :: Pass1Accum -> Xm.ClassInstance -> Either String Pass1Accum
+parseClassInstance :: Pass1Accum -> Tm.ClassInstance -> Either String Pass1Accum
 parseClassInstance accum aModel
   | T.isPrefixOf "ir." aModel.modelDF =
     let
@@ -379,7 +421,7 @@ parseClassInstance accum aModel
             case Mp.lookup "res_model" aModel.fieldsDF of
                 Just lnField ->
                   case lnField.kindF of
-                    Xm.LabelFK ->
+                    Tm.LabelFK ->
                       let
                         newActWin = ActionWindow {
                           idAW = aModel.idDF
@@ -412,12 +454,12 @@ parseClassInstance accum aModel
             mbName = case Mp.lookup "name" aModel.fieldsDF of
               Nothing -> Nothing
               Just nameField -> case nameField.kindF of
-                Xm.LabelFK -> Just nameField.valueF
+                Tm.LabelFK -> Just nameField.valueF
                 _ -> Nothing
             mbPath = case Mp.lookup "path" aModel.fieldsDF of
               Nothing -> Nothing
               Just pathField -> case pathField.kindF of
-                Xm.LabelFK -> Just pathField.valueF
+                Tm.LabelFK -> Just pathField.valueF
                 _ -> Nothing
           in
           case (mbName, mbPath) of
@@ -508,7 +550,7 @@ genLeftMenu (menuItems, modelDefs, _) locales =
   Right menus
 
 
-genComponents :: Mp.Map T.Text ActionWindow -> Xm.ViewDefs -> [Menu] -> Mp.Map T.Text (SqlFct, SqlFct) -> Mp.Map Bs.ByteString CompLocales -> [Component]
+genComponents :: Mp.Map T.Text ActionWindow -> Tm.ViewDefs -> [Menu] -> Mp.Map T.Text (SqlFct, SqlFct) -> Mp.Map Bs.ByteString CompLocales -> [Component]
 genComponents actionWindows viewDefs leftMenus sqlOps locales =
   concatMap (\aMenu ->
       let
@@ -669,7 +711,7 @@ consolidateLocales =
   updLocWizardButton accum content aLocEntry = accum
 
 
-analyseMenuItems :: Maybe CompLocales -> Maybe [Xm.ClassInstance] -> [Xm.MenuItem] -> [Menu]
+analyseMenuItems :: Maybe CompLocales -> Maybe [Tm.ClassInstance] -> [Tm.MenuItem] -> [Menu]
 analyseMenuItems locales iconDefs =
   let
     menuLocales = case locales of
@@ -680,7 +722,7 @@ analyseMenuItems locales iconDefs =
   map (analyseMenuItem menuLocales iconMaps)
 
 
-buildIconDefMap :: Maybe [Xm.ClassInstance] -> (Mp.Map T.Text (Mp.Map T.Text Xm.Field), Mp.Map T.Text T.Text)
+buildIconDefMap :: Maybe [Tm.ClassInstance] -> (Mp.Map T.Text (Mp.Map T.Text Tm.Field), Mp.Map T.Text T.Text)
 buildIconDefMap mbDefs =
   case mbDefs of
     Nothing -> (Mp.empty, Mp.empty)
@@ -696,7 +738,7 @@ buildIconDefMap mbDefs =
       (iconMap, iconsByNameMap)
 
 
-analyseMenuItem :: Maybe (Mp.Map Bs.ByteString Locales) -> (Mp.Map T.Text (Mp.Map T.Text Xm.Field), Mp.Map T.Text T.Text) -> Xm.MenuItem -> Menu
+analyseMenuItem :: Maybe (Mp.Map Bs.ByteString Locales) -> (Mp.Map T.Text (Mp.Map T.Text Tm.Field), Mp.Map T.Text T.Text) -> Tm.MenuItem -> Menu
 analyseMenuItem locales (iconMap, iconsByNameMap) aMenuItem =
   let
     updLabel = case aMenuItem.nameMI of
@@ -722,7 +764,7 @@ analyseMenuItem locales (iconMap, iconsByNameMap) aMenuItem =
         "gnuhealth-list" -> Just "icons/gnuhealth-list.svg"
         _ -> case Mp.lookup (iconName <> "_icon") iconMap of
           Nothing -> Mp.lookup iconName iconsByNameMap
-          Just fields -> Xm.valueF <$> Mp.lookup "path" fields
+          Just fields -> Tm.valueF <$> Mp.lookup "path" fields
   in
   Menu {
     label = updLabel

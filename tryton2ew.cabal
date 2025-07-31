@@ -51,7 +51,9 @@ library
       Parsing.Pot
       Parsing.Python
       Parsing.Xml
-      Tryton.Module
+      Tryton.Load
+      Tryton.Process
+      Tryton.Types
   other-modules:
       Paths_tryton2ew
   hs-source-dirs:

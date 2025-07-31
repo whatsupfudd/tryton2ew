@@ -6,7 +6,7 @@ import Data.Text (Text)
 import Options.Applicative
 
 
-data EnvOptions = EnvOptions {
+newtype EnvOptions = EnvOptions {
     appHome :: Maybe Text
   }
 

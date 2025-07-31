@@ -16,9 +16,7 @@ import qualified Data.Word8 as W
 import System.FilePath ((</>))
 
 import qualified Parsing.Python as Py
-import qualified Parsing.Xml as Xm
 import Generation.Utils (fieldNamed)
-import Parsing.Xml (FieldKind(ReferenceFK))
 
 
 data SqlTable = SqlTable {

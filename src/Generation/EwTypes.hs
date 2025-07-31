@@ -4,9 +4,11 @@ import qualified Data.ByteString as Bs
 import qualified Data.Map.Strict as Mp
 import qualified Data.Text as T
 
-import qualified Parsing.Xml as Xm
 import qualified Parsing.Python as Py
 import qualified Generation.Elm as E
+
+import qualified Tryton.Types as Tm
+
 
 type Locales = Mp.Map Bs.ByteString Bs.ByteString
 
@@ -66,7 +68,8 @@ data Menu = Menu {
   , mid :: T.Text
   , children :: [Menu]
   , action :: Maybe T.Text
-}
+  }
+  deriving (Show)
 
 data AppEntry = AppEntry {
   endpoint :: T.Text
@@ -89,7 +92,7 @@ data ActionWindow = ActionWindow {
   , optionsAW :: [AwDomain]
   , viewLinksAW :: [(T.Text, Int)]  -- extracts from 'ir.action.act_window.view' => (ir.ui.view:name, sequence)
   , viewModelLinksAW :: Mp.Map T.Text (T.Text, T.Text)  -- 'ir.ui.view' => (viewDef name, viewDef type)
-  , uiViewsAW :: Mp.Map T.Text Xm.Definition
+  , uiViewsAW :: Mp.Map T.Text Tm.Definition
   , logicView :: Maybe Py.TrytonModel
   }
   deriving (Show)

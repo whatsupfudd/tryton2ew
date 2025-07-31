@@ -10,11 +10,10 @@ import qualified Data.Text.Encoding as T
 import System.FilePath ((</>))
 
 import qualified Generation.Sql as Sq
-import qualified Parsing.Xml as Xm
+import qualified Tryton.Types as Tm
 
 
-
-genBootstrap :: FilePath -> Mp.Map T.Text Sq.SqlTable -> Mp.Map T.Text [Xm.ClassInstance] -> IO ()
+genBootstrap :: FilePath -> Mp.Map T.Text Sq.SqlTable -> Mp.Map T.Text [Tm.ClassInstance] -> IO ()
 genBootstrap destDir sqlTables instanceMap =
   let
     eiDataPreps = map (genDataPrep sqlTables) (Mp.toList instanceMap)
@@ -29,7 +28,7 @@ genBootstrap destDir sqlTables instanceMap =
       putStrLn $ "@[genDataPrep] some errs: " <> L.intercalate "\n, " (lefts eiDataPreps)
 
 
-genDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Xm.ClassInstance]) -> Either String Bs.ByteString
+genDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Tm.ClassInstance]) -> Either String Bs.ByteString
 genDataPrep sqlTables classInstances =
   let
     eiDataPreps = spitDataPrep sqlTables classInstances
@@ -41,7 +40,7 @@ genDataPrep sqlTables classInstances =
       Right dataPreps
 
 
-spitDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Xm.ClassInstance]) -> Either String Bs.ByteString
+spitDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Tm.ClassInstance]) -> Either String Bs.ByteString
 spitDataPrep sqlTables (model, instances) =
   case Mp.lookup model sqlTables of
     Nothing -> Left $ "@[spitDataPrep] no table for model: " <> T.unpack model
@@ -78,7 +77,7 @@ resolveFields =
   ) (Mp.empty, [])
 
 
-createInsertValues :: Mp.Map T.Text Sq.SqlFieldDef -> [T.Text] -> Xm.ClassInstance -> ([Bs.ByteString], [String])
+createInsertValues :: Mp.Map T.Text Sq.SqlFieldDef -> [T.Text] -> Tm.ClassInstance -> ([Bs.ByteString], [String])
 createInsertValues fieldMap requireds anInstance =
   let
     (resultStrs, reqLeftover, errList) =
@@ -87,7 +86,7 @@ createInsertValues fieldMap requireds anInstance =
           Nothing -> (outStr, missingReqs, ("@[createInsertValues] unknown field: " <> T.unpack fName) : errs)
           Just fieldDef ->
             case fValue.kindF of
-              Xm.LabelFK ->
+              Tm.LabelFK ->
                 if fieldDef.kindSF `elem` [Sq.VarCharSFK,Sq.CharSFK, Sq.DateSFK, Sq.DateTimeSFK, Sq.TimeSFK, Sq.TimeDeltaSFK, Sq.TimestampSFK] then
                   ("\'" <> T.encodeUtf8 fValue.valueF <> "\'" : outStr, L.delete fName missingReqs, errs)
                 else case fieldDef.kindSF of
@@ -100,9 +99,9 @@ createInsertValues fieldMap requireds anInstance =
                     (val : outStr, L.delete fName missingReqs, errs)
                   _ -> (outStr, missingReqs
                         , ("@[createInsertValues] unsupported SQL kind: " <> show fieldDef.kindSF <> " for field: " <> T.unpack fName) : errs)
-              Xm.EvalFK ->
+              Tm.EvalFK ->
                 (outStr, L.delete fName missingReqs, "@[createInsertValues] unsupported Eval field: " <> T.unpack fName : errs)
-              Xm.ReferenceFK ->
+              Tm.ReferenceFK ->
                 (outStr, L.delete fName missingReqs, "@[createInsertValues] unsupported Reference field: " <> T.unpack fName : errs)
         ) ([], requireds, []) (Mp.toList anInstance.fieldsDF)
   in
