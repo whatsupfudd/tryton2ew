@@ -20,12 +20,14 @@ import qualified Data.Text.IO as TIO
 import Data.Time.Clock (getCurrentTime, diffUTCTime)
 
 import System.Directory (doesDirectoryExist, listDirectory)
-import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>))
+import System.FilePath (takeDirectory, takeExtension, takeFileName, (</>), splitDirectories, splitFileName, takeBaseName)
 
 import Text.XML (Document(..), Element(..), Node(..), Prologue(..), renderText)
 import qualified Text.XML as X
 import Text.XML.Cursor (Cursor, attribute, child, content
                         , element, fromDocument, node, ($//), ($/), (>=>), (&/))
+
+import qualified Data.ConfigFile as Cf
 
 import qualified Options.Runtime as Rto
 import qualified Options.Cli as Cli
@@ -34,6 +36,7 @@ import qualified Generation.Sql as Sq
 import qualified Generation.DataPrep as Dp
 import qualified Parsing.Xml as Xm
 import qualified Parsing.Pot as Po
+import qualified Tryton.Module as Tm
 import qualified Generation.EwTypes as Ew
 import qualified Generation.EasyWordy as Ew
 
@@ -42,6 +45,7 @@ data TargetFileKind =
     XmlFile
   | PotFile
   | PyFile
+  | CfgFile
   deriving (Show, Eq)
 
 
@@ -63,7 +67,12 @@ importerCmd importOpts rtOpts =
     putStrLn "@[importerCmd] nothing to test."
   else do
     targetFiles <- getTargetFiles importOpts.inPathIO
-
+    eiModules <- loadConfiguration importOpts.inPathIO targetFiles
+    case eiModules of
+      Left errs -> putStrLn $ "@[importerCmd] loadConfiguration errs: " <> errs
+      Right modules -> do
+        putStrLn $ "@[importerCmd] modules: " <> show modules
+        pure ()
     (xmlDefs, locales) <- if importOpts.noAppIO then
         pure (([], Mp.empty, Xm.emptyViewDefs), Mp.empty)
       else
@@ -147,6 +156,7 @@ getTargetFiles !dir = do
             ".pot" -> pure [TargetFile { kindTF = PotFile, pathTF = path }]
             ".po" -> pure [TargetFile { kindTF = PotFile, pathTF = path }]
             ".py" -> pure [TargetFile { kindTF = PyFile, pathTF = path }]
+            ".cfg" -> pure [TargetFile { kindTF = CfgFile, pathTF = path }]
             _ -> pure []
     pure (concat paths)
 
@@ -272,3 +282,106 @@ handlePyFiles files destPath = do
   !endGenTime <- getCurrentTime
   putStrLn $ "@[handlePyFiles] time to process: " <> show (diffUTCTime endGenTime startGenTime)
   pure allElements
+
+
+loadConfiguration :: FilePath -> [TargetFile] -> IO (Either String [Tm.ModuleSrcTT])
+loadConfiguration rootPath targetFiles =
+  let
+    !configFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == CfgFile ]
+    !xmlFiles = [ T.pack tf.pathTF | tf <- targetFiles, tf.kindTF == XmlFile ]
+    !potFiles = [ T.pack tf.pathTF | tf <- targetFiles, tf.kindTF == PotFile ]
+    !pyFiles = [ T.pack tf.pathTF | tf <- targetFiles, tf.kindTF == PyFile ]
+  in do
+  configRez <- forM configFiles $ \aCfgFile ->
+    -- putStrLn $ "@[importerCmd] config file: " <> aFile
+    case drop 1 . take 2 . reverse . splitDirectories $ aCfgFile of
+      [] -> pure $ Left $ "@[importerCmd] cfg readfile err: no module name"
+      (moduleName : _) -> do
+        eiConfig <- Cf.readfile Cf.emptyCP aCfgFile
+        case eiConfig of
+          Left err -> pure . Left $ "@[importerCmd] cfg readfile err: " <> show err
+          Right config ->
+            case Mp.lookup "tryton" config.content of
+              Nothing -> pure $ Left "@[importerCmd] cfg readfile err: no tryton section"
+              Just configMap ->
+                let
+                  depends = maybe [] (filter (/= "") . lines) (Mp.lookup "depends" configMap)
+                  (target, dataXml, otherXml) = case Mp.lookup "xml" configMap of
+                    Nothing -> (Nothing, [], [])
+                    Just xmlStr ->
+                      let
+                        xmlFiles = filter (/= "") . lines $ xmlStr
+                      in
+                      case xmlFiles of
+                        [] -> (Nothing, [], [])
+                        _ -> foldr (\aPath (mbTarget, dataAccum, otherAccum) ->
+                            case length $ splitDirectories aPath of
+                              1 ->
+                                if takeBaseName aPath == moduleName <> "_view" then
+                                  (Just aPath, dataAccum, otherAccum)
+                                else
+                                  (mbTarget, dataAccum, aPath : otherAccum)
+                              _ -> if "data/" `T.isPrefixOf` T.pack aPath then
+                                (mbTarget, drop 5 aPath : dataAccum, otherAccum)
+                              else
+                                (mbTarget, dataAccum, aPath : otherAccum)
+                          ) (Nothing, [], []) xmlFiles
+                in do
+                pure . Right $ Tm.ModuleSrcTT {
+                  nameMT = moduleName
+                  , locationMT = T.pack . fst $ splitFileName aCfgFile
+                  , dependsMT = depends
+                  , targetMT = target
+                  , dataSpecMT = dataXml
+                  , supportSpecMT = otherXml
+                  , localesMT = []
+                  , viewsMT = []
+                  , miscXmlMT = []
+                  , modelsMT = []
+                  , logicMT = []
+                }
+  case lefts configRez of
+    [] ->
+      let
+        ((leftXml, leftPy, leftLocales), consolidated) = foldl (\((xmlLO, pyLO, localesLO), modules) aModule ->
+            let
+              locationLength = T.length aModule.locationMT
+              (updXmlF, inXmlF) = foldl (\(accum, inAccum) aPath ->
+                  if aModule.locationMT `T.isPrefixOf` aPath then
+                    (accum, T.drop locationLength aPath : inAccum)
+                  else
+                    (aPath : accum, inAccum)
+                  ) ([], []) xmlLO
+              (updPyF, inPyF) = foldl (\(accum, inAccum) aPath ->
+                  if aModule.locationMT `T.isPrefixOf` aPath then
+                    (accum, T.drop locationLength aPath : inAccum)
+                  else
+                    (aPath : accum, inAccum)
+                  ) ([], []) pyLO
+              (updLocales, inLocales) = foldl (\(accum, inAccum) aPath ->
+                  if aModule.locationMT `T.isPrefixOf` aPath then
+                    (accum, T.drop locationLength aPath : inAccum)
+                  else
+                    (aPath : accum, inAccum)
+                  ) ([], []) localesLO
+              (views, otherXml) = foldl (\(views, otherXml) aPath ->
+                  if "view/" `T.isPrefixOf` aPath then
+                    (T.drop 5 aPath : views, otherXml)
+                  else
+                    (views, aPath : otherXml)
+                  ) ([], []) inXmlF
+              updModule = aModule {
+                Tm.viewsMT = map T.unpack views
+                , Tm.miscXmlMT = map T.unpack otherXml
+                , Tm.logicMT = map T.unpack inPyF
+                , Tm.localesMT = map T.unpack inLocales
+              }
+            in
+            ((updXmlF, updPyF, updLocales), updModule : modules)
+          ) ((xmlFiles, pyFiles, potFiles), []) (rights configRez)
+      in do
+      putStrLn $ "@[importerCmd] leftXml: " <> show leftXml
+      putStrLn $ "@[importerCmd] leftPy: " <> show leftPy
+      putStrLn $ "@[importerCmd] leftLocales: " <> show leftLocales
+      pure $ Right consolidated
+    errs -> pure $ Left $ L.intercalate "\n" errs
