@@ -30,9 +30,9 @@ data ModuleSrcTT = ModuleSrcTT {
 data FullModuleTT = FullModuleTT {
   srcModuleFM :: ModuleSrcTT
   , menusFM :: [MenuItem]
-  , actWinsFM :: [ClassInstance]
+  , actWinsFM :: [ModelInstance]
   , xmlDefsFM :: [XmlDefs]
-  , localesFM :: Po.LocaleDefs
+  , localesFM :: Mp.Map Bs.ByteString [Po.LocEntry]
   , viewDefsFM :: Maybe ViewDefs
   , logicFM :: Mp.Map Text [Py.LogicElement]
   , sqlDefsFM :: Mp.Map Text Sq.SqlTable
@@ -42,8 +42,9 @@ data FullModuleTT = FullModuleTT {
 
 data TrytonApp = TrytonApp {
   modulesTA :: [FullModuleTT]
-  , localesTA :: Mp.Map Bs.ByteString Po.LocaleDefs
-  , unifiedMenuTA :: [MenuItem]
+  , localesTA :: Po.LocaleDefs
+  , menuTreeTA :: [MenuItem]
+  , instancesByKindTA :: Mp.Map Text [ModelInstance]
   }
   deriving (Show)
 
@@ -63,11 +64,12 @@ data TargetFile = TargetFile {
 
 
 -- Used to be in Parsing.Xml:
-type XmlDefs = ([MenuItem], Mp.Map Text [ClassInstance], ViewDefs)
+type XmlDefs = ([MenuItem], Mp.Map Text [ModelInstance], ViewDefs)
 
 data MenuItem = MenuItem {
     idMI :: Text
   , parentMI :: Maybe Text
+  , namespaceMI :: Maybe Text
   , nameMI :: Maybe Text
   , iconMI :: Maybe Text
   , seqOrdMI :: Int
@@ -80,7 +82,7 @@ data MenuItem = MenuItem {
 data ViewDefs = ViewDefs {
     trees :: Mp.Map Text ([Attribute], [TreeElement])
   , forms :: Mp.Map Text ([Attribute], [FormElement])
-  , lists :: Mp.Map Text ([Attribute], [ToDoElement])
+  , lists :: Mp.Map Text (DefContent ToDoElement)
   , graphs :: Mp.Map Text ([Attribute], [ToDoElement])
   , boards :: Mp.Map Text ([Attribute], [ToDoElement])
   , calendars :: Mp.Map Text ([Attribute], [ToDoElement])
@@ -88,6 +90,8 @@ data ViewDefs = ViewDefs {
   }
   deriving (Show)
 
+instance Semigroup ViewDefs where
+  (ViewDefs aA aB aC aD aE aF aG) <> (ViewDefs bA bB bC bD bE bF bG) = ViewDefs (aA <> bA) (aB <> bB) (aC <> bC) (aD <> bD) (aE <> bE) (aF <> bF) (aG <> bG)
 
 emptyViewDefs :: ViewDefs
 emptyViewDefs = ViewDefs {
@@ -100,28 +104,38 @@ emptyViewDefs = ViewDefs {
   , errors = Mp.empty
   }
 
-lengthViewDefs :: ViewDefs -> (Int, Int, Int, Int, Int, Int)
-lengthViewDefs aViewDefs =
-  (length (Mp.elems (trees aViewDefs)), 
-  length (Mp.elems (forms aViewDefs)),
+{-
   length (Mp.elems (lists aViewDefs)),
   length (Mp.elems (graphs aViewDefs)),
   length (Mp.elems (boards aViewDefs)),
-  length (Mp.elems (calendars aViewDefs)))
+  length (Mp.elems (calendars aViewDefs))
+-}
+lengthViewDefs :: ViewDefs -> (Int, Int)
+lengthViewDefs aViewDefs =
+  (length (Mp.elems (trees aViewDefs)), length (Mp.elems (forms aViewDefs)))
 
 data Definition =
-  ModelDF ClassInstance
+  ModelDF ModelInstance
   | TreeDF [Attribute] [TreeElement]
   | FormDF [Attribute] [FormElement]
-  | ListFormDF [Attribute] [ToDoElement]
+  | ListFormDF (DefContent ToDoElement)
   | GraphDF [Attribute] [ToDoElement]
   | BoardDF [Attribute] [ToDoElement]
   | CalendarDF [Attribute] [ToDoElement]
   | ParseErrorDF String
   deriving (Show)
 
+data DefContent eleT = DefContent {
+    elements :: [eleT]
+  , attributes :: [Attribute]
+  }
+  deriving (Show)
 
-data ClassInstance = ClassInstance {
+instance Semigroup (DefContent eleT) where
+  (DefContent aA aB) <> (DefContent bA bB) = DefContent (aA <> bA) (aB <> bB)
+
+
+data ModelInstance = ModelInstance {
     idDF     :: !Text
   , modelDF  :: !Text
   , fieldsDF :: !(Mp.Map Text Field)

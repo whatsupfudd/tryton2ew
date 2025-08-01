@@ -27,21 +27,22 @@ import Text.XML.Cursor (Cursor, attribute, child, content
 
 import qualified Tryton.Types as Tm
 
+
 -- Used for active windows docs:
 extractMenuItems :: Document -> [Tm.MenuItem]
 extractMenuItems doc =
-    let cursor = fromDocument doc
-        dataNodes = cursor $// element "data"
-        items = concatMap (\d -> d $/ element "menuitem") dataNodes
-    in do
-    map parseItem items
+  let cursor = fromDocument doc
+      dataNodes = cursor $// element "data"
+      items = concatMap (\d -> d $/ element "menuitem") dataNodes
+  in do
+  map parseItem items
   where
     parseItem c =
       let
         mid = case attribute "id" c of
                 [i] -> i
                 _ -> error "menuitem missing or multiple ids"
-        parent = listToMaybe $ attribute "parent" c
+        (parent, namespace) = maybe (Nothing, Nothing) extractMenuParent $ listToMaybe $ attribute "parent" c
         nameAttr = listToMaybe (attribute "name" c)
         labelTxt = listToMaybe (c $/ element "label" &/ content)
         iconAttr = listToMaybe (attribute "icon" c)
@@ -50,12 +51,26 @@ extractMenuItems doc =
         nameVal = nameAttr <|> labelTxt
       in
       Tm.MenuItem {
-        idMI = mid, parentMI = parent, nameMI = nameVal, iconMI = iconAttr, seqOrdMI = sequence, childrenMI = [], actionMI = action
+        idMI = mid
+        , parentMI = parent
+        , namespaceMI = namespace
+        , nameMI = nameVal
+        , iconMI = iconAttr
+        , seqOrdMI = sequence
+        , childrenMI = []
+        , actionMI = action
       }
 
 
-parseModuleView :: Document -> [Tm.Definition]
-parseModuleView doc =
+extractMenuParent :: T.Text -> (Maybe T.Text, Maybe T.Text)
+extractMenuParent parent =
+  case T.breakOn "." parent of
+    ("", "") -> (Nothing, Nothing)
+    (aParent, "") -> (Just aParent, Nothing)
+    (aNamespace, aParent) -> (Just $ T.drop 1 aParent, Just aNamespace)
+
+parseModelView :: Document -> [Tm.Definition]
+parseModelView doc =
   let
     cur = fromDocument doc
     dataNodes = cur $// element "data"
@@ -143,7 +158,7 @@ parseRec c =
                 (singleAttr "name" field, parseField field) | field <- c $/ element "field"
               ]
   in
-  Tm.ModelDF $ Tm.ClassInstance {
+  Tm.ModelDF $ Tm.ModelInstance {
     idDF = rid
     , modelDF = model
     , fieldsDF = fields

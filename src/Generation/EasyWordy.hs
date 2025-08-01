@@ -7,8 +7,9 @@ module Generation.EasyWordy where
 import qualified Data.ByteString as Bs
 import qualified Data.Char as C
 import Data.Either (rights, lefts, fromLeft, fromRight)
+import qualified Data.List as L
 import qualified Data.Map.Strict as Mp
-import Data.Maybe (fromMaybe, isNothing)
+import Data.Maybe (fromMaybe, isNothing, catMaybes)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Encoding as T
@@ -28,7 +29,7 @@ import Generation.EwTypes
 import qualified Generation.Utils as Ut
 
 
-type UiDefs = ([Tm.MenuItem], Mp.Map T.Text [Tm.ClassInstance], Tm.ViewDefs)
+type UiDefs = ([Tm.MenuItem], Mp.Map T.Text [Tm.ModelInstance], Tm.ViewDefs)
 
 {-
 Need to generate:
@@ -54,18 +55,18 @@ generateApp :: FilePath -> Tm.TrytonApp -> IO (Either String ())
 generateApp destPath tApp =
   let
     allInstances = Mp.fromList $ [(T.pack m.srcModuleFM.nameMT, m.actWinsFM) | m <- tApp.modulesTA]
-    uiDefs = (tApp.unifiedMenuTA, allInstances, Tm.emptyViewDefs)
-    consoLocales = Mp.empty
+    uiDefs = (tApp.menuTreeTA, tApp.instancesByKindTA, Tm.emptyViewDefs)
+    consoLocales = consolidateLocales tApp.localesTA
   in
-  case genLeftMenu uiDefs Mp.empty of
+  case genLeftMenu uiDefs consoLocales of
     Left err -> do
       pure $ Left err
     Right leftMenus ->
       let
         renderedMenus = Fd.leftPartAItems leftMenus
-        allInfo = map (\m -> 
+        (allSqlModels, allTtModels, allActWins, allViewDefs) = foldl (\(sqlAccum, ttAccum, actWinAccum, viewDefAccum) m ->
             let
-              ttSqlModels = foldl (\accum anElement ->
+              ttModels = foldl (\accum anElement ->
                   case anElement of
                     Pp.ModelEl trytonModel ->
                       case Mp.lookup "__name__" trytonModel.fields of
@@ -75,24 +76,34 @@ generateApp destPath tApp =
                         Nothing -> accum
                     _ -> accum
                 ) Mp.empty (concat $ Mp.elems m.logicFM)
-              (actWinMap, iconMap, someStrs) = scanInstances ttSqlModels (fromMaybe Tm.emptyViewDefs m.viewDefsFM) m.actWinsFM
-              sqlOps = Hs.genSqlOps m.sqlDefsFM ttSqlModels
-              components = genComponents actWinMap (fromMaybe Tm.emptyViewDefs m.viewDefsFM) leftMenus sqlOps consoLocales
-            in (sqlOps, iconMap, components)
-          ) tApp.modulesTA
-        (sqlOps, iconMap, components) = unzip3 allInfo
+
+            in -- (sqlOps, iconMap, components)
+            (sqlAccum <> m.sqlDefsFM, ttAccum <> ttModels, actWinAccum <> m.actWinsFM, maybe viewDefAccum (<> viewDefAccum) m.viewDefsFM)
+          ) (Mp.empty :: Mp.Map T.Text Sq.SqlTable, Mp.empty :: Mp.Map T.Text Pp.TrytonModel, [], Tm.emptyViewDefs) tApp.modulesTA
+        (actWinMap, iconMap, someStrs) = scanInstances allTtModels allViewDefs allActWins
+        sqlOps = Hs.genSqlOps allSqlModels allTtModels
+        components = genComponents actWinMap allViewDefs leftMenus sqlOps consoLocales
+        dynRoutes = Fd.genDynRoutes components
+        yamlEntries = genFunctionDefs components
       in do
+      putStrLn $ "@[generateApp] # components: " <> show (length components)
+      putStrLn $ "@[generateApp] allInstances: " <> L.intercalate "\n  , " (map (\(k, v) -> T.unpack k <> " : " <> show (length v)) (Mp.toList tApp.instancesByKindTA))
+      putStrLn $ "@[generateApp] consoLocales: " <> show consoLocales
       TIO.writeFile (destPath </> "wapp/Protected/LeftMenuNav.elm") (T.decodeUtf8 renderedMenus)
       mapM_ (\(fName, (fetchOp, insertOp)) -> do
-          putStrLn $ "@[generateApp] genSqlFile: " <> T.unpack fName
-          Hs.genSqlFile (destPath </> "HsLib") (Sq.modelToSqlName (T.encodeUtf8 fName)) [fetchOp, insertOp]) (Mp.toList $ Mp.unions sqlOps)
+          -- putStrLn $ "@[generateApp] genSqlFile: " <> T.unpack fName
+          Hs.genSqlFile (destPath </> "HsLib") (Sq.modelToSqlName (T.encodeUtf8 fName)) [fetchOp, insertOp]
+          ) (Mp.toList sqlOps) -- (Mp.toList $ Mp.unions
       mapM_ (\aComp -> do
-          putStrLn $ "@[generateApp] saveComponent: " <> T.unpack aComp.refID
+          -- putStrLn $ "@[generateApp] saveComponent: " <> T.unpack aComp.refID
           saveComponent destPath aComp
-        ) (concat components)
+        ) components
+      TIO.writeFile (destPath </> "wapp/DynRoutes.elm") (T.decodeUtf8 dynRoutes)
+      TIO.writeFile (destPath </> "yamlEntries.txt") $ T.decodeUtf8 yamlEntries
       pure $ Right ()
 
 
+{-
 generateAppV0 :: FilePath -> UiDefs -> Mp.Map T.Text Sq.SqlTable -> Po.LocaleDefs -> [(FilePath, [Pp.LogicElement])] -> IO (Either String ())
 generateAppV0 destPath uiDefs@(_, classInstances, viewDefs) tableMap locales logicElements =
   let
@@ -138,19 +149,20 @@ generateAppV0 destPath uiDefs@(_, classInstances, viewDefs) tableMap locales log
           Hs.genSqlFile (destPath </> "HsLib") (Sq.modelToSqlName (T.encodeUtf8 fName)) [fetchOp, insertOp]) (Mp.toList sqlOps)
       mapM_ (saveComponent destPath) components
       pure $ Right ()
+-}
 
 
 data Pass1Accum = Pass1Accum {
   actWindowsP1 :: Mp.Map T.Text ActionWindow
   , iconsP1 :: Mp.Map T.Text IconDef
-  , actDomainsP1 ::[Tm.ClassInstance]
-  , actViewsP1 :: [Tm.ClassInstance]
-  , irUiViewP1 :: [Tm.ClassInstance]
+  , actDomainsP1 ::[Tm.ModelInstance]
+  , actViewsP1 :: [Tm.ModelInstance]
+  , irUiViewP1 :: [Tm.ModelInstance]
   }
   deriving (Show)
 
 
-scanInstances :: Mp.Map T.Text Pp.TrytonModel -> Tm.ViewDefs -> [Tm.ClassInstance] -> (Mp.Map T.Text ActionWindow, Mp.Map T.Text IconDef, [String])
+scanInstances :: Mp.Map T.Text Pp.TrytonModel -> Tm.ViewDefs -> [Tm.ModelInstance] -> (Mp.Map T.Text ActionWindow, Mp.Map T.Text IconDef, [String])
 scanInstances logicMap viewDefs instances =
   let
     (p1Accum, p1Errs) = scanInstancePass1 instances
@@ -167,8 +179,8 @@ scanInstances logicMap viewDefs instances =
   (Mp.fromList [ (aActWin.idAW, aActWin) | aActWin <- Mp.elems finalMap ], p1Accum.iconsP1, p1Errs <> p2Errs <> p3Errs <> p4Errs)
 
 
--- Transforms ClassInstances into ActionWIndows and Icons.
-scanInstancePass1 :: [Tm.ClassInstance] -> (Pass1Accum, [String])
+-- Transforms ModelInstances into ActionWIndows and Icons.
+scanInstancePass1 :: [Tm.ModelInstance] -> (Pass1Accum, [String])
 scanInstancePass1 classInstances =
   let
     initAccum = Pass1Accum {
@@ -179,7 +191,7 @@ scanInstancePass1 classInstances =
       , irUiViewP1 = []
     }
   in
-  foldl (\(accum, errs) aModel -> case parseClassInstance accum aModel of
+  foldl (\(accum, errs) aModel -> case parseModelInstance accum aModel of
       Left err -> (accum, err : errs)
       Right newAccum -> (newAccum, errs)
     ) (initAccum, []) classInstances
@@ -247,7 +259,7 @@ scanInstancesPass2 p1Accum =
               (accum, newErr : errs)
     ) domainConso p1Accum.actViewsP1
   where
-  makeValue :: (Mp.Map T.Text ActionWindow, [String]) -> ActionWindow -> Tm.Field -> Tm.ClassInstance -> (Mp.Map T.Text ActionWindow, [String])
+  makeValue :: (Mp.Map T.Text ActionWindow, [String]) -> ActionWindow -> Tm.Field -> Tm.ModelInstance -> (Mp.Map T.Text ActionWindow, [String])
   makeValue (accum, errs) actWin actWinField aView =
     case Mp.lookup "view" aView.fieldsDF of
       Nothing ->
@@ -282,7 +294,7 @@ scanInstancesPass2 p1Accum =
 
 
 -- Connects the ir.ui.views to the ActionWindows (based on the act_win.views relationships).
-scanInstancesPass3 :: Mp.Map T.Text ActionWindow -> [Tm.ClassInstance] -> (Mp.Map T.Text ActionWindow, [String])
+scanInstancesPass3 :: Mp.Map T.Text ActionWindow -> [Tm.ModelInstance] -> (Mp.Map T.Text ActionWindow, [String])
 scanInstancesPass3 actWinMap =
   foldl (\(accum, errs) aUiView ->
     case Mp.lookup "model" aUiView.fieldsDF of
@@ -376,7 +388,7 @@ scanInstancesPass4 logicMap viewDefs actWinMap =
   (updActWinMap, errs)
 
 
-instanceToDomain :: Tm.ClassInstance -> Either String AwDomain
+instanceToDomain :: Tm.ModelInstance -> Either String AwDomain
 instanceToDomain anInstance =
   let
     eiName = case Mp.lookup "name" anInstance.fieldsDF of
@@ -405,8 +417,8 @@ instanceToDomain anInstance =
     _ -> Left $ "@[instanceToDomain] errors: " <> show lefties
 
 
-parseClassInstance :: Pass1Accum -> Tm.ClassInstance -> Either String Pass1Accum
-parseClassInstance accum aModel
+parseModelInstance :: Pass1Accum -> Tm.ModelInstance -> Either String Pass1Accum
+parseModelInstance accum aModel
   | T.isPrefixOf "ir." aModel.modelDF =
     let
       subModel = T.drop 3 aModel.modelDF
@@ -564,7 +576,7 @@ genComponents actionWindows viewDefs leftMenus sqlOps locales =
             , moduleName = componentName
             , refID = aMenu.mid
             , types = []
-            , functions = Fd.genFunction aMenu.mid mbActionWindow
+            , functions = Fd.genFunction locales aMenu.mid mbActionWindow
             , locales = Mp.empty  -- Fix this.
             -- TODO: add the support logic for fetching or inserting data.
             , fetchers = []
@@ -616,7 +628,8 @@ consolidateLocales =
           "help" -> accum { helpCL = updLocHelp accum.helpCL content aLocEntry }
           "selection" -> accum { selectionCL = updLocSelection accum.selectionCL content aLocEntry }
           "view" -> accum { viewCL = updLocView accum.viewCL content aLocEntry }
-          "wizardButton" -> accum { wizardButtonCL = updLocWizardButton accum.wizardButtonCL content aLocEntry }
+          "wizard_button" -> accum { wizardButtonCL = updLocWizardButton accum.wizardButtonCL content aLocEntry }
+          "report" -> accum { reportCL = updLocReport accum.reportCL content aLocEntry }
           _ -> accum { errors = "unknown kind: " <> kind : accum.errors }
       ) compLoc locEntries
 
@@ -629,7 +642,7 @@ consolidateLocales =
     case rest of
       "" -> ("error: no content", "")
       _ ->
-        if someKind `elem` ["model", "field", "help", "selection", "view", "wizardButton"] then
+        if someKind `elem` ["model", "field", "help", "selection", "view", "wizard_button", "report"] then
           (someKind, Bs.tail rest)
         else
           ("error: unknown kind: " <> someKind, "")
@@ -704,25 +717,29 @@ consolidateLocales =
   updLocSelection :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales) -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales)
   updLocSelection accum content aLocEntry = accum
 
+
   updLocView :: Mp.Map Bs.ByteString Locales -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString Locales
   updLocView accum content aLocEntry = accum
 
   updLocWizardButton :: Mp.Map Bs.ByteString Locales -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString Locales
   updLocWizardButton accum content aLocEntry = accum
 
+  updLocReport :: Mp.Map Bs.ByteString Locales -> Bs.ByteString -> Po.LocEntry -> Mp.Map Bs.ByteString Locales
+  updLocReport accum content aLocEntry = accum
 
-analyseMenuItems :: Maybe CompLocales -> Maybe [Tm.ClassInstance] -> [Tm.MenuItem] -> [Menu]
-analyseMenuItems locales iconDefs =
+
+analyseMenuItems :: Maybe CompLocales -> Maybe [Tm.ModelInstance] -> [Tm.MenuItem] -> [Menu]
+analyseMenuItems locales mbModelDefs =
   let
     menuLocales = case locales of
       Nothing -> Nothing
       Just aLocales -> maybe Nothing (Mp.lookup "name") (Mp.lookup "ir.ui.menu" aLocales.modelCL)
-    iconMaps = buildIconDefMap iconDefs
+    iconMaps = buildIconDefMap mbModelDefs
   in
   map (analyseMenuItem menuLocales iconMaps)
 
 
-buildIconDefMap :: Maybe [Tm.ClassInstance] -> (Mp.Map T.Text (Mp.Map T.Text Tm.Field), Mp.Map T.Text T.Text)
+buildIconDefMap :: Maybe [Tm.ModelInstance] -> (Mp.Map T.Text (Mp.Map T.Text Tm.Field), Mp.Map T.Text T.Text)
 buildIconDefMap mbDefs =
   case mbDefs of
     Nothing -> (Mp.empty, Mp.empty)
@@ -743,21 +760,21 @@ analyseMenuItem locales (iconMap, iconsByNameMap) aMenuItem =
   let
     updLabel = case aMenuItem.nameMI of
       Nothing -> case locales of
-        Nothing -> "anonymous"
+        Nothing -> "(id: " <> aMenuItem.idMI <> ")"
         Just namedEntries ->
           case Mp.lookup (T.encodeUtf8 aMenuItem.idMI) namedEntries of
-            Nothing -> "anonymous"
+            Nothing -> "(id: " <> aMenuItem.idMI <> ")"
             Just aLocDef ->
               let
                 values = Mp.toList aLocDef
               in
               if null values then
-                "anonymous"
+                 "(id: " <> aMenuItem.idMI <> ")"
               else
                 case head values of
                   (aKey, "") -> T.decodeUtf8 aKey
                   (aKey, aValue) -> T.decodeUtf8 aValue
-      Just aString -> aString
+      Just aName -> aName
     derefIcon = case aMenuItem.iconMI of
       Nothing -> Nothing
       Just iconName -> case iconName of
@@ -773,6 +790,18 @@ analyseMenuItem locales (iconMap, iconsByNameMap) aMenuItem =
   , children = map (analyseMenuItem locales (iconMap, iconsByNameMap)) aMenuItem.childrenMI
   , action = aMenuItem.actionMI
   }
+
+
+showMatchedIcons :: (Mp.Map T.Text (Mp.Map T.Text Tm.Field), Mp.Map T.Text T.Text) -> [Tm.MenuItem] -> [(T.Text, Maybe T.Text)]
+showMatchedIcons (iconMap, iconsByNameMap) = concatMap (\menuItem ->
+        let
+          topLevel = case menuItem.iconMI of
+            Nothing -> Nothing
+            Just aLabel -> Just (aLabel, Mp.lookup aLabel iconsByNameMap)
+          children = showMatchedIcons (iconMap, iconsByNameMap) menuItem.childrenMI
+        in
+          maybe children (: children) topLevel
+      )
 
 
 genFunctionDefs :: [Component] -> Bs.ByteString

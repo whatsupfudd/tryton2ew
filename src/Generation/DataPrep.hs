@@ -13,7 +13,7 @@ import qualified Generation.Sql as Sq
 import qualified Tryton.Types as Tm
 
 
-genBootstrap :: FilePath -> Mp.Map T.Text Sq.SqlTable -> Mp.Map T.Text [Tm.ClassInstance] -> IO ()
+genBootstrap :: FilePath -> Mp.Map T.Text Sq.SqlTable -> Mp.Map T.Text [Tm.ModelInstance] -> IO ()
 genBootstrap destDir sqlTables instanceMap =
   let
     eiDataPreps = map (genDataPrep sqlTables) (Mp.toList instanceMap)
@@ -28,7 +28,7 @@ genBootstrap destDir sqlTables instanceMap =
       putStrLn $ "@[genDataPrep] some errs: " <> L.intercalate "\n, " (lefts eiDataPreps)
 
 
-genDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Tm.ClassInstance]) -> Either String Bs.ByteString
+genDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Tm.ModelInstance]) -> Either String Bs.ByteString
 genDataPrep sqlTables classInstances =
   let
     eiDataPreps = spitDataPrep sqlTables classInstances
@@ -40,7 +40,7 @@ genDataPrep sqlTables classInstances =
       Right dataPreps
 
 
-spitDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Tm.ClassInstance]) -> Either String Bs.ByteString
+spitDataPrep :: Mp.Map T.Text Sq.SqlTable -> (T.Text, [Tm.ModelInstance]) -> Either String Bs.ByteString
 spitDataPrep sqlTables (model, instances) =
   case Mp.lookup model sqlTables of
     Nothing -> Left $ "@[spitDataPrep] no table for model: " <> T.unpack model
@@ -77,7 +77,7 @@ resolveFields =
   ) (Mp.empty, [])
 
 
-createInsertValues :: Mp.Map T.Text Sq.SqlFieldDef -> [T.Text] -> Tm.ClassInstance -> ([Bs.ByteString], [String])
+createInsertValues :: Mp.Map T.Text Sq.SqlFieldDef -> [T.Text] -> Tm.ModelInstance -> ([Bs.ByteString], [String])
 createInsertValues fieldMap requireds anInstance =
   let
     (resultStrs, reqLeftover, errList) =

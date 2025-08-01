@@ -29,6 +29,7 @@ data ImporterOptions = ImporterOptions {
   , dataPrepIO :: Bool
   , noAppIO :: Bool
   , noLocalesIO :: Bool
+  , noLogicIO :: Bool
   }
  deriving (Show)
 
@@ -129,4 +130,8 @@ importerOpts =
               <*> switch (
                   long "nopot"
                   <> help "Do not parse the locales (.po, .pot) files."
+                )
+              <*> switch (
+                  long "nopy"
+                  <> help "Do not parse the Python files."
                 )

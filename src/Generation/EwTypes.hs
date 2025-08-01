@@ -60,7 +60,8 @@ data Component = Component {
   , locales :: Mp.Map T.Text Locales    -- keyword -> values per locale (en, fr, etc.)
   , fetchers :: [Fetcher]
   , inserters :: [Inserter]
-}
+  }
+  deriving (Show)
 
 data Menu = Menu {
   label :: T.Text
@@ -113,8 +114,8 @@ data Fetcher = Fetcher {
   , decoderFT :: T.Text
   , hsForwardFT :: T.Text
   , continuationFT :: T.Text
-}
-
+  }
+  deriving (Show)
 
 data HsForward = HsForward {
   nameHF :: Bs.ByteString
@@ -122,16 +123,19 @@ data HsForward = HsForward {
   , jsDecoderHF :: T.Text
   , jsEncoderHF :: T.Text
   , codeHF :: Bs.ByteString
-}
+  }
+  deriving (Show)
 
 
 data SqlFct = SqlFct {
   nameSF :: Bs.ByteString
   , codeSF :: Bs.ByteString
-}
+  }
+  deriving (Show)
 
 data Inserter = Inserter {
   midIn :: T.Text
   , nameIn :: T.Text
-}
+  }
+  deriving (Show)
 

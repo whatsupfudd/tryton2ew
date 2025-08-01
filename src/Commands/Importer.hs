@@ -23,6 +23,7 @@ import qualified Generation.DataPrep as Dp
 import qualified Parsing.Xml as Xm
 import qualified Tryton.Types as Tm
 import qualified Tryton.Load as Tl
+import qualified Tryton.Process as Tp
 import qualified Generation.EwTypes as Ew
 import qualified Generation.EasyWordy as Ew
 
@@ -36,36 +37,37 @@ importerCmd importOpts rtOpts =
     putStrLn "@[importerCmd] nothing to test."
   else do
     targetFiles <- getTargetFiles importOpts.inPathIO
-    eiModules <- Tl.loadConfiguration importOpts importOpts.inPathIO targetFiles
+    eiModules <- Tl.genModulesFromFolder importOpts importOpts.inPathIO targetFiles
     case eiModules of
       Left errs -> putStrLn $ "@[importerCmd] loadConfiguration errs: " <> errs
       Right modules -> do
-        loadRez <- mapM (Tl.loadModule importOpts) modules
+        loadRez <- mapM (Tl.parseModule importOpts) modules
         case lefts loadRez of
           [] -> do
             forM_ (rights loadRez) $ \aModule -> do
               putStrLn $ "@[importerCmd] module: " <> aModule.srcModuleFM.nameMT
-              putStrLn $ "@[importerCmd] menus: " <> show (length aModule.menusFM)
-              putStrLn $ "@[importerCmd] actWins: " <> show (length aModule.actWinsFM)
-              putStrLn $ "@[importerCmd] xmlDefs: " <> show (length aModule.xmlDefsFM)
-              -- putStrLn $ "@[importerCmd] locales: " <> show aModule.localesFM
-              putStrLn $ "@[importerCmd] viewDefs: " <> show (maybe (0,0,0,0,0,0) Tm.lengthViewDefs aModule.viewDefsFM)
-              putStrLn $ "@[importerCmd] logic: " <> show (length aModule.logicFM)
-              putStrLn $ "@[importerCmd] sqlDefs: " <> show (length aModule.sqlDefsFM)
+                <> ", menus: " <> show (length aModule.menusFM)
+                <> ", actWins: " <> show (length aModule.actWinsFM)
+                <> ", xmlDefs: " <> show (length aModule.xmlDefsFM)
+                -- <> "locales: " <> show aModule.localesFM
+                <> ", viewDefs: " <> show (maybe (0,0) Tm.lengthViewDefs aModule.viewDefsFM)
+                <> ", logic: " <> show (length aModule.logicFM)
+                <> ", sqlDefs: " <> show (length aModule.sqlDefsFM)
             let
               (nbrMenus, nbrActWins, nbrXmlDefs, nbrViewDefs, nbrLogic, nbrSqlDefs) =
                 foldr (\aModule (nbrMenus, nbrActWins, nbrXmlDefs, nbrViewDefs, nbrLogic, nbrSqlDefs) ->
                   (nbrMenus + length aModule.menusFM,
                   nbrActWins + length aModule.actWinsFM,
                   nbrXmlDefs + length aModule.xmlDefsFM,
-                  n6Sum nbrViewDefs (maybe (0,0,0,0,0,0) Tm.lengthViewDefs aModule.viewDefsFM),
+                  n2Sum nbrViewDefs (maybe (0,0) Tm.lengthViewDefs aModule.viewDefsFM),
                   nbrLogic + length aModule.logicFM,
-                  nbrSqlDefs + length aModule.sqlDefsFM)) (0,0,0,(0,0,0,0,0,0),0,0) (rights loadRez)
+                  nbrSqlDefs + length aModule.sqlDefsFM)) (0,0,0,(0,0),0,0) (rights loadRez)
             putStrLn $ "@[importerCmd] total: " <> show (nbrMenus, nbrActWins, nbrXmlDefs, nbrViewDefs, nbrLogic, nbrSqlDefs)
             case Tl.consolidateModules (rights loadRez) of
               Left errs -> putStrLn $ "@[importerCmd] consolidateModules errs: " <> errs
               Right trytonApp -> do
                 -- putStrLn $ "@[importerCmd] app: " <> show trytonApp
+                Tp.printMenuTree trytonApp.menuTreeTA 0 (importOpts.destPathIO </> "menuTree.txt")
                 eiRez <- Ew.generateApp importOpts.destPathIO trytonApp
                 case eiRez of
                   Left errs -> putStrLn $ "@[importerCmd] generateApp errs: " <> errs
@@ -74,7 +76,10 @@ importerCmd importOpts rtOpts =
 
 n6Sum :: (Int, Int, Int, Int, Int, Int) -> (Int, Int, Int, Int, Int, Int) -> (Int, Int, Int, Int, Int, Int)
 n6Sum (a,b,c,d,e,f) (g,h,i,j,k,l) = (a+g,b+h,c+i,d+j,e+k,f+l)
+n2Sum :: (Int, Int) -> (Int, Int) -> (Int, Int)
+n2Sum (a,b) (c,d) = (a+c,b+d)
 
+{-
 importerCmdV0 :: Cli.ImporterOptions -> Rto.RunOptions -> IO ()
 importerCmdV0 importOpts rtOpts =
   let
@@ -150,7 +155,7 @@ importerCmdV0 importOpts rtOpts =
             sqlTables ->
               Dp.genBootstrap importOpts.destPathIO tableMap clInstances
     pure ()
-
+-}
 
 getTargetFiles :: FilePath -> IO [Tm.TargetFile]
 getTargetFiles !dir = do

@@ -13,6 +13,7 @@ import qualified Tryton.Types as Tm
 import qualified Generation.Elm as E
 import qualified Generation.Views as Vw
 import Generation.EwTypes
+import Data.Maybe (fromMaybe)
 
 
 leftPartAItems :: [Menu] -> Bs.ByteString
@@ -279,8 +280,11 @@ typeDecoder fieldType = case fieldType of
   _ -> "Dec.string"
 
 
-genFunction :: T.Text -> Maybe ActionWindow -> [E.FunctionDef]
-genFunction refID mbActionWin =
+genFunction :: Mp.Map Bs.ByteString CompLocales -> T.Text -> Maybe ActionWindow -> [E.FunctionDef]
+genFunction locales refID mbActionWin =
+  let
+    mbDefaultLocales = Mp.lookup "en" locales
+  in
   case mbActionWin of
     Nothing ->
       [
@@ -303,6 +307,7 @@ genFunction refID mbActionWin =
                 Vw.genTree vName elements : accum
               Tm.FormDF {} -> accum
           ) [] (Mp.toList actionWin.uiViewsAW)
+        xlatedLogicName = T.decodeUtf8 $ translateModelName mbDefaultLocales actionWin.logicNameAW
       in
       [
         E.FunctionDef {
@@ -311,20 +316,52 @@ genFunction refID mbActionWin =
           , typeDef = E.MonadTD "H.Html" (E.VarTD "msg")
           , bodyFD = E.div [E.class_ "bg-gray-50 dark:bg-gray-900 p-4 md:ml-64 lg:mr-16 min-h-full pt-20" ] $ case subFcts of
               [] -> [ E.div [E.class_ "text-red-500" ] [
-                        E.text actionWin.logicNameAW
+                        E.text xlatedLogicName
                       , E.text "No view nor form defined."
                     ]]
               _ -> [
                 E.div [ E.class_ "mx-auto max-w-screen-xl px-4 lg:px-12" ]
                   ([ E.div [ E.class_ "flex justify-between items-center mb-4" ]
-                    [ E.h1 [ E.class_ "text-2xl text-gray-900 dark:text-white font-bold" ] [ E.text actionWin.logicNameAW ]
-                    , E.div [ E.class_ "flex items-center" ]
-                      [ E.button [ E.class_ "bg-gray-500 text-white px-4 py-2 rounded-md" ] [ E.text "Refresh" ] ]
-                    ]
+                    [ E.h1 [ E.class_ "text-2xl text-gray-900 dark:text-white font-bold" ] [ E.text xlatedLogicName ] ]
                   ]
-                  <> [ E.ApplyEE aFct.nameFD [] | (aFct, _) <- subFcts ]
+                  <> [ E.ApplyEE (T.decodeUtf8 $ translateFieldName mbDefaultLocales actionWin.logicNameAW aFct.nameFD) [] | (aFct, _) <- subFcts ]
                   )
                 ]
           , events = concat [ aFct.events <> bFct.events | (aFct, bFct) <- subFcts ]
-        }    
+        }
       ] <> concat [ [aFct, bFct] | (aFct, bFct) <- subFcts ]
+
+{-
+type ModelLocale = Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Bs.ByteString)))
+-}
+
+translateModelName :: Maybe CompLocales -> T.Text -> Bs.ByteString
+translateModelName mbLocales aName =
+  let
+    modelName = T.encodeUtf8 aName
+  in
+  case mbLocales of
+    Nothing -> modelName
+    Just locales -> fromMaybe modelName ( -- TODO: use the locale
+        case Mp.lookup modelName locales.modelCL >>= Mp.lookup "name" >>= Mp.lookup ""  of
+          Nothing -> Nothing
+          Just cMap -> case Mp.keys cMap of
+            [] -> Nothing
+            (aKey : _) -> Just aKey
+      )
+
+translateFieldName :: Maybe CompLocales -> T.Text -> T.Text -> Bs.ByteString
+translateFieldName mbLocales fstName sndName =
+  let
+    modelName = T.encodeUtf8 fstName
+    fieldName = T.encodeUtf8 sndName
+  in
+  case mbLocales of
+    Nothing -> fieldName
+    Just locales -> fromMaybe fieldName (
+        case Mp.lookup modelName locales.fieldCL >>= Mp.lookup fieldName of
+          Nothing -> Nothing
+          Just cMap -> case Mp.keys cMap of
+            [] -> Nothing
+            (aKey : _) -> Just aKey
+      )

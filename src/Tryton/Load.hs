@@ -5,7 +5,7 @@
 
 module Tryton.Load where
 
-import Control.Monad (forM)
+import Control.Monad (forM, unless)
 import Control.Exception (try, SomeException)
 
 import qualified Data.ByteString as Bs
@@ -44,12 +44,14 @@ importOpts control:
   , dataPrepIO :: Bool
   , noAppIO :: Bool
   , noLocalesIO :: Bool
+  , noLogicIO
 -}
 
-loadConfiguration :: ImporterOptions -> FilePath -> [TargetFile] -> IO (Either String [ModuleSrcTT])
-loadConfiguration importOpts rootPath targetFiles =
+genModulesFromFolder :: ImporterOptions -> FilePath -> [TargetFile] -> IO (Either String [ModuleSrcTT])
+genModulesFromFolder importOpts rootPath targetFiles =
   let
     !configFiles = [ tf.pathTF | tf <- targetFiles, tf.kindTF == CfgFile ]
+    -- Upgrade to Text to use the isPrefixOf function later on:
     !xmlFiles = [ T.pack tf.pathTF | tf <- targetFiles, tf.kindTF == XmlFile ]
     !potFiles = [ T.pack tf.pathTF | tf <- targetFiles, tf.kindTF == PotFile ]
     !pyFiles = [ T.pack tf.pathTF | tf <- targetFiles, tf.kindTF == PyFile ]
@@ -66,89 +68,103 @@ loadConfiguration importOpts rootPath targetFiles =
             case Mp.lookup "tryton" config.content of
               Nothing -> pure $ Left "@[importerCmd] cfg readfile err: no tryton section"
               Just configMap ->
-                let
-                  depends = maybe [] (filter (/= "") . lines) (Mp.lookup "depends" configMap)
-                  (target, dataXml, otherXml) = case Mp.lookup "xml" configMap of
-                    Nothing -> (Nothing, [], [])
-                    Just xmlStr ->
-                      let
-                        xmlFiles = filter (/= "") . lines $ xmlStr
-                      in
-                      case xmlFiles of
-                        [] -> (Nothing, [], [])
-                        _ -> foldr (\aPath (mbTarget, dataAccum, otherAccum) ->
-                            case length $ splitDirectories aPath of
-                              1 ->
-                                if takeBaseName aPath == moduleName <> "_view" then
-                                  (Just aPath, dataAccum, otherAccum)
-                                else
-                                  (mbTarget, dataAccum, aPath : otherAccum)
-                              _ -> if "data/" `T.isPrefixOf` T.pack aPath then
-                                (mbTarget, drop 5 aPath : dataAccum, otherAccum)
-                              else
-                                (mbTarget, dataAccum, aPath : otherAccum)
-                          ) (Nothing, [], []) xmlFiles
-                in do
-                pure . Right $ ModuleSrcTT {
-                  nameMT = moduleName
-                  , locationMT = T.pack . fst $ splitFileName aCfgFile
-                  , dependsMT = depends
-                  , targetMT = target
-                  , dataSpecMT = dataXml
-                  , supportSpecMT = otherXml
-                  , localesMT = []
-                  , viewsMT = []
-                  , miscXmlMT = []
-                  , logicMT = []
-                }
+                pure . Right $ readModuleContent moduleName aCfgFile configMap
   case lefts configRez of
     [] ->
       let
-        ((leftXml, leftPy, leftLocales), consolidated) = foldl (\((xmlLO, pyLO, localesLO), modules) aModule ->
-            let
-              locationLength = T.length aModule.locationMT
-              (updXmlF, inXmlF) = foldl (\(accum, inAccum) aPath ->
-                  if aModule.locationMT `T.isPrefixOf` aPath then
-                    (accum, T.drop locationLength aPath : inAccum)
-                  else
-                    (aPath : accum, inAccum)
-                  ) ([], []) xmlLO
-              (updPyF, inPyF) = foldl (\(accum, inAccum) aPath ->
-                  if aModule.locationMT `T.isPrefixOf` aPath then
-                    (accum, T.drop locationLength aPath : inAccum)
-                  else
-                    (aPath : accum, inAccum)
-                  ) ([], []) pyLO
-              (updLocales, inLocales) = foldl (\(accum, inAccum) aPath ->
-                  if aModule.locationMT `T.isPrefixOf` aPath then
-                    (accum, T.drop locationLength aPath : inAccum)
-                  else
-                    (aPath : accum, inAccum)
-                  ) ([], []) localesLO
-              (views, otherXml) = foldl (\(views, otherXml) aPath ->
-                  if "view/" `T.isPrefixOf` aPath then
-                    (T.drop 5 aPath : views, otherXml)
-                  else
-                    (views, aPath : otherXml)
-                  ) ([], []) inXmlF
-              updModule = aModule {
-                viewsMT = map T.unpack views
-                , miscXmlMT = map T.unpack otherXml
-                , logicMT = map T.unpack inPyF
-                , localesMT = map T.unpack inLocales
-              }
-            in
-            ((updXmlF, updPyF, updLocales), updModule : modules)
-          ) ((xmlFiles, pyFiles, potFiles), []) (rights configRez)
+        (modules, (leftXml, leftPy, leftLocales)) = assignFilesToModules (xmlFiles, pyFiles, potFiles) (rights configRez)
       in do
       putStrLn $ "@[importerCmd] leftXml: " <> show leftXml
       putStrLn $ "@[importerCmd] leftPy: " <> show leftPy
       putStrLn $ "@[importerCmd] leftLocales: " <> show leftLocales
-      pure $ Right consolidated
+      pure $ Right modules
     errs -> pure $ Left $ L.intercalate "\n" errs
 
-loadModule :: ImporterOptions -> ModuleSrcTT -> IO (Either String FullModuleTT)
-loadModule importOpts aModule = do
+
+readModuleContent :: String -> FilePath -> Mp.Map Cf.OptionSpec String -> ModuleSrcTT
+readModuleContent moduleName aCfgFile configMap =
+  let
+    depends = maybe [] (filter (/= "") . lines) (Mp.lookup "depends" configMap)
+    (target, dataXml, otherXml) = case Mp.lookup "xml" configMap of
+      Nothing -> (Nothing, [], [])
+      Just xmlStr ->
+        let
+          xmlFiles = filter (/= "") . lines $ xmlStr
+        in
+        case xmlFiles of
+          [] -> (Nothing, [], [])
+          _ -> foldr (\aPath (mbTarget, dataAccum, otherAccum) ->
+              case length $ splitDirectories aPath of
+                1 ->
+                  if takeBaseName aPath == moduleName <> "_view" then
+                    (Just aPath, dataAccum, otherAccum)
+                  else
+                    (mbTarget, dataAccum, aPath : otherAccum)
+                _ -> if "data/" `T.isPrefixOf` T.pack aPath then
+                  (mbTarget, drop 5 aPath : dataAccum, otherAccum)
+                else
+                  (mbTarget, dataAccum, aPath : otherAccum)
+            ) (Nothing, [], []) xmlFiles
+  in
+  ModuleSrcTT {
+    nameMT = moduleName
+    , locationMT = T.pack . fst $ splitFileName aCfgFile
+    , dependsMT = depends
+    , targetMT = target
+    , dataSpecMT = dataXml
+    , supportSpecMT = otherXml
+    , localesMT = []
+    , viewsMT = []
+    , miscXmlMT = []
+    , logicMT = []
+  }
+
+
+assignFilesToModules :: ([T.Text], [T.Text], [T.Text]) -> [ModuleSrcTT] -> ([ModuleSrcTT], ([T.Text], [T.Text], [T.Text]))
+assignFilesToModules (xmlFiles, pyFiles, potFiles) initModules =
+  let
+    (leftOvers, consolidated) = foldl (\((xmlLO, pyLO, localesLO), modules) aModule ->
+        let
+          locationLength = T.length aModule.locationMT
+          (updXmlF, inXmlF) = foldl (\(accum, inAccum) aPath ->
+              if aModule.locationMT `T.isPrefixOf` aPath then
+                (accum, T.drop locationLength aPath : inAccum)
+              else
+                (aPath : accum, inAccum)
+              ) ([], []) xmlLO
+          (updPyF, inPyF) = foldl (\(accum, inAccum) aPath ->
+              if aModule.locationMT `T.isPrefixOf` aPath then
+                (accum, T.drop locationLength aPath : inAccum)
+              else
+                (aPath : accum, inAccum)
+              ) ([], []) pyLO
+          (updLocales, inLocales) = foldl (\(accum, inAccum) aPath ->
+              if aModule.locationMT `T.isPrefixOf` aPath then
+                (accum, T.drop locationLength aPath : inAccum)
+              else
+                (aPath : accum, inAccum)
+              ) ([], []) localesLO
+          (views, otherXml) = foldl (\(views, otherXml) aPath ->
+              if "view/" `T.isPrefixOf` aPath then
+                (T.drop 5 aPath : views, otherXml)
+              else
+                (views, aPath : otherXml)
+              ) ([], []) inXmlF
+          updModule = aModule {
+            viewsMT = map T.unpack views
+            , miscXmlMT = map T.unpack otherXml
+            , logicMT = map T.unpack inPyF
+            , localesMT = map T.unpack inLocales
+          }
+        in
+        ((updXmlF, updPyF, updLocales), updModule : modules)
+      ) ((xmlFiles, pyFiles, potFiles), []) initModules
+  in
+  (consolidated, leftOvers)
+
+
+parseModule :: ImporterOptions -> ModuleSrcTT -> IO (Either String FullModuleTT)
+parseModule importOpts aModule = do
   case aModule.targetMT of
     Nothing ->
       pure $ Right $ FullModuleTT {
@@ -166,39 +182,47 @@ loadModule importOpts aModule = do
         basePath = T.unpack aModule.locationMT
       in do
       -- Start with the main definitions:
-      xmlDoc <- loadXmlFile (basePath </> targetFile)
-      case xmlDoc of
+      mbMainDef <- loadXmlFile (basePath </> targetFile)
+      case mbMainDef of
         Nothing -> pure . Left $ "@[loadModule] no xml file for module: " <> aModule.nameMT
-        Just aDoc ->
+        Just mainDef ->
           let
-            items = Xm.extractMenuItems aDoc
-            moduleViews = Xm.parseModuleView aDoc
+            items = Xm.extractMenuItems mainDef
+            modelViews = Xm.parseModelView mainDef
           in do
+
           viewsRez <- forM aModule.viewsMT $ \xmlFilePath -> do
-            aRez <- loadXmlFile (basePath </> "view" </> xmlFilePath)
-            case aRez of
+            mbUiDef <- loadXmlFile (basePath </> "view" </> xmlFilePath)
+            case mbUiDef of
               Nothing -> pure . Left $ "@[loadModule] loadXmlFile empty on: " <> aModule.nameMT <> "." <> xmlFilePath
-              Just aDoc ->
+              Just uiDef ->
                 let
                   baseFileName = takeBaseName xmlFilePath
-                  (views, _) = Xm.parseUiView baseFileName aDoc
+                  (views, _) = Xm.parseUiView baseFileName uiDef
                 in do
                 pure $ Right (T.pack baseFileName, views)
           (_, viewDefs) <- case lefts viewsRez of
-            [] -> pure . Tp.processDefinitions $ rights viewsRez
+            [] -> pure . Tp.consolidateDefinitions $ rights viewsRez
             errs -> do
               putStrLn $ "@[loadModule] error loading views: " <> L.intercalate "\n" errs
-              pure . Tp.processDefinitions $ rights viewsRez
-          {- PotFiles will be handled in a separate step. -}
+              pure . Tp.consolidateDefinitions $ rights viewsRez
+
           potFiles <- if importOpts.noLocalesIO then
-            pure Mp.empty
+            -- Still need to have the basic language definitions:
+            let
+              defaultPot = basePath </> "locale" </> aModule.nameMT <> ".pot"
+            in
+            loadPotFiles aModule.nameMT [defaultPot] importOpts.destPathIO
           else
-            handlePotFiles [basePath </> aLocale | aLocale <- aModule.localesMT] importOpts.destPathIO
-          --}
-          logicElements <-
-            handlePyFiles [basePath </> aPyFile | aPyFile <- aModule.logicMT] importOpts.destPathIO
+            loadPotFiles aModule.nameMT [basePath </> aLocale | aLocale <- aModule.localesMT] importOpts.destPathIO
+
+          logicElements <- if importOpts.noLogicIO then
+              pure []
+            else 
+              loadPyFiles [basePath </> aPyFile | aPyFile <- aModule.logicMT] importOpts.destPathIO
           let
             eiClassDefs = map (\(f, elements) -> (f, Sq.genTableDefs elements)) logicElements
+
           tableDefs <- mapM (\(fileName, eiList) ->
                 case lefts eiList of
                   [] -> pure (fileName, rights eiList)
@@ -206,15 +230,18 @@ loadModule importOpts aModule = do
                     putStrLn $ "@[loadModule] genTableDefs errs: " <> L.intercalate "\n" errs
                     pure (fileName, rights eiList)
               ) eiClassDefs
+          -- TODO: give warnings on errors from each group that has been parsed.
           pure $ Right $ FullModuleTT {
             srcModuleFM = aModule
             , menusFM = items
             , actWinsFM = concatMap (\case
                      ModelDF clInstance -> [clInstance]
                      _ -> []
-                  ) moduleViews
+                  ) modelViews
             , xmlDefsFM = []
-            , localesFM = Mp.empty
+            , localesFM = case potFiles of
+                Left err -> Mp.empty
+                Right localeMap -> localeMap
             , viewDefsFM = Just viewDefs
             , logicFM = Mp.fromList [(T.pack aPyFile, elements) | (aPyFile, elements) <- logicElements]
             , sqlDefsFM = Mp.fromList $ concat [[(T.decodeUtf8 sqlTable.nameST, sqlTable) | sqlTable <- sqlTables ] | (filePath, sqlTables) <- tableDefs]
@@ -224,16 +251,27 @@ consolidateModules :: [FullModuleTT] -> Either String TrytonApp
 consolidateModules modules =
   let
     !tree = Tp.buildMenuTree $ concatMap menusFM modules
+    allLocales = Mp.fromList $ foldl (\accum aModule ->
+      case Mp.lookup "en" aModule.localesFM of
+        Nothing -> accum
+        Just locEntries -> (T.encodeUtf8 . T.pack $ aModule.srcModuleFM.nameMT, locEntries) : accum
+      ) [] modules
+    instancesByKind = foldl (\aAccum aModule ->
+        foldl (\bAccum aMInstance ->
+            Mp.insertWith (++) aMInstance.modelDF [aMInstance] bAccum
+          ) aAccum aModule.actWinsFM
+      ) Mp.empty modules
   in
   Right $ TrytonApp {
     modulesTA = modules
-    , unifiedMenuTA = tree
-    , localesTA = Mp.empty
+    , menuTreeTA = tree
+    , localesTA = Mp.singleton "en" allLocales
+    , instancesByKindTA = instancesByKind
   }
   {-
   -}
 
-
+{-
 handleXmlFiles :: [FilePath] -> FilePath -> IO XmlDefs
 handleXmlFiles !files destPath = do
   !startItemsTime <- getCurrentTime
@@ -258,15 +296,15 @@ handleXmlFiles !files destPath = do
 
   !startDefsTime <- getCurrentTime
   let
-    (classInstances, viewDefs) = Tp.processDefinitions $ map snd mbItems
+    (mInstances, viewDefs) = Tp.consolidateDefinitions $ map snd mbItems
   -- putStrLn $ "@[handleXmlFiles] modelDefs: " <> show modelDefs
   -- putStrLn $ "@[handleXmlFiles] viewDefs: " <> show viewDefs
   !endDefsTime <- getCurrentTime
   --putStrLn $ "@[handleXmlFiles] time to make viewDefs: " <> show (diffUTCTime endDefsTime startDefsTime)
-  Tp.printClassInstances classInstances destPath
+  Tp.printModelInstances mInstances destPath
   Tp.printViewErrs viewDefs destPath
-  pure (tree, classInstances, viewDefs)
-
+  pure (tree, mInstances, viewDefs)
+-}
 
 loadXmlFile :: FilePath -> IO (Maybe Document)
 loadXmlFile filePath = do
@@ -276,13 +314,30 @@ loadXmlFile filePath = do
       Left _    -> pure Nothing
 
 
-handlePotFiles :: [FilePath] -> FilePath -> IO Po.LocaleDefs
-handlePotFiles files destPath = do
+loadPotFiles :: String -> [FilePath] -> FilePath -> IO (Either String (Mp.Map Bs.ByteString [Po.LocEntry]))
+loadPotFiles moduleName files destPath = do
+  potFiles <- forM files $ \aFile -> do
+    !locFile <- Po.parseLocFileWithDiagnostics aFile
+    case locFile of
+      Left err -> pure $ Left $ "@[loadPotFiles] parseLocFileWithDiagnostics err: " <> show err
+      Right locFile ->
+        if takeBaseName aFile == moduleName then
+           pure $ Right ("en", locFile.entriesFI)
+        else
+          pure $ Right (T.encodeUtf8 . T.pack $ takeBaseName aFile, locFile.entriesFI)
+  case lefts potFiles of
+    [] ->
+      pure $ Right $ Mp.fromList (rights potFiles)
+    errs -> pure $ Left $ L.intercalate "\n" errs
+
+{-
+handlePotFiles :: String -> [FilePath] -> FilePath -> IO Po.LocaleDefs
+handlePotFiles moduleName files destPath = do
   !startParseTime <- getCurrentTime
   !potFiles <- forM files $ \aFile -> do
     !potDoc <- Po.parseLocFileWithDiagnostics aFile
     let
-      moduleName = takeDirectory aFile
+      -- moduleName = takeDirectory aFile
       fileName = takeFileName aFile
     pure (T.pack moduleName, T.pack fileName, potDoc)
   !endParseTime <- getCurrentTime
@@ -327,16 +382,19 @@ handlePotFiles files destPath = do
   -- putStrLn $ "@[handlePotFiles] time to process: " <> show (diffUTCTime endProcTime startProcTime)
   -- TIO.writeFile (destPath </> "reorgLocales.txt") $ T.pack (show reorgLocales)
   pure reorgLocales
+-}
 
 
-handlePyFiles :: [FilePath] -> FilePath -> IO [(FilePath, [Py.LogicElement])]
-handlePyFiles files destPath = do
-  !startParseTime <- getCurrentTime
-  !allElements <- forM files $ \aFile -> do
+loadPyFiles :: [FilePath] -> FilePath -> IO [(FilePath, [Py.LogicElement])]
+loadPyFiles files destPath = do
+  forM files $ \aFile -> do
     !elements <- Py.extractElements aFile
     pure (aFile, elements)
-  !endParseTime <- getCurrentTime
-  -- putStrLn $ "@[handlePyFiles] time to parse: " <> show (diffUTCTime endParseTime startParseTime)
+
+  -- Old code:
+  -- !startParseTime <- getCurrentTime
+  -- !endParseTime <- getCurrentTime
+  -- putStrLn $ "@[loadPyFiles] time to parse: " <> show (diffUTCTime endParseTime startParseTime)
   -- putStrLn "\n-- Debug elements: --\n"
   {- TODO: move this into a per-module step:
   TIO.writeFile (destPath </> "elements.txt") . T.pack . L.intercalate "\n" $ map (\(fp, ms) ->  fp <> ":\n" <> show ms <> "\n") allElements
@@ -355,9 +413,8 @@ handlePyFiles files destPath = do
              Right tableDef -> accum <> show tableDef <> "\n"
           ) "" eiTableDefs
       in
-      "@[handlePyFiles] " <> f <> if msgs == "" then "" else ":\n" <> msgs
+      "@[loadPyFiles] " <> f <> if msgs == "" then "" else ":\n" <> msgs
     ) eiClassDefs
   !endGenTime <- getCurrentTime
-  putStrLn $ "@[handlePyFiles] time to process: " <> show (diffUTCTime endGenTime startGenTime)
+  putStrLn $ "@[loadPyFiles] time to process: " <> show (diffUTCTime endGenTime startGenTime)
   -}
-  pure allElements
