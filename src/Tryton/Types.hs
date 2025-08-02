@@ -42,7 +42,7 @@ data FullModuleTT = FullModuleTT {
 
 data TrytonApp = TrytonApp {
   modulesTA :: [FullModuleTT]
-  , localesTA :: Po.LocaleDefs
+  , localesTA :: Po.LocaleForModule
   , menuTreeTA :: [MenuItem]
   , instancesByKindTA :: Mp.Map Text [ModelInstance]
   }

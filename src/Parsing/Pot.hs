@@ -27,13 +27,13 @@ import qualified Text.Megaparsec.Byte.Lexer as CL
 type Parser = M.Parsec Void Bs.ByteString
 
 -- LocaleDefs : <locale> -> ( <module> -> [LocEntry] )
-type LocaleDefs = Map.Map Bs.ByteString (Map.Map Bs.ByteString [LocEntry])
+type LocaleForModule = Map.Map Bs.ByteString (Map.Map Bs.ByteString [LocEntry])
 
 -- | Represents a single localization entry in the .po/.pot file
 data LocEntry = LocEntry {
-    contextEN :: !Bs.ByteString  -- ^ The msgctxt field (module ID)
-  , keyEN     :: !Bs.ByteString  -- ^ The msgid field (key)
-  , valueEN   :: !Bs.ByteString  -- ^ The msgstr field (value)
+    contextEN :: !Bs.ByteString  -- ^ msgctxt: the <kind>:<v1>:[...], with <v1> = <model-name>,<field-name> or similar.
+  , keyEN     :: !Bs.ByteString  -- ^ msgid: usually the content of the translation
+  , valueEN   :: !Bs.ByteString  -- ^ msgstr: usually nothing.
   } deriving (Show, Eq)
 
 -- | Represents a complete localization file with header and entries

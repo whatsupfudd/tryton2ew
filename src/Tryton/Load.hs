@@ -247,6 +247,7 @@ parseModule importOpts aModule = do
             , sqlDefsFM = Mp.fromList $ concat [[(T.decodeUtf8 sqlTable.nameST, sqlTable) | sqlTable <- sqlTables ] | (filePath, sqlTables) <- tableDefs]
           }
 
+
 consolidateModules :: [FullModuleTT] -> Either String TrytonApp
 consolidateModules modules =
   let

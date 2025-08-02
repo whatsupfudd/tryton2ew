@@ -3,6 +3,7 @@
 module Generation.Fuddle where
 
 import qualified Data.ByteString as Bs
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Mp
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -12,8 +13,8 @@ import Text.RawString.QQ (r)
 import qualified Tryton.Types as Tm
 import qualified Generation.Elm as E
 import qualified Generation.Views as Vw
+import qualified Generation.Utils as U
 import Generation.EwTypes
-import Data.Maybe (fromMaybe)
 
 
 leftPartAItems :: [Menu] -> Bs.ByteString
@@ -57,17 +58,17 @@ genLeftMenuItem level aMenu =
     indent = Bs.replicate (level * 2) 32
   in
   if null aMenu.children then
-    indent <> "Simple {\n    title = \"" <> T.encodeUtf8 aMenu.label
-    <> "\"\n" <> indent <> "    , href = \"" <> T.encodeUtf8 aMenu.mid
-    <> "\"\n" <> indent <> "    , mid = \"" <> T.encodeUtf8 aMenu.mid
-    <> "\"\n" <> indent <> "    , icon = " <> maybe "Nothing" (\i -> "Just (img [ src \"" <> T.encodeUtf8 i <> "\", width 32 ] [])") aMenu.icon
+    indent <> "Simple {\n    title = \"" <> aMenu.label
+    <> "\"\n" <> indent <> "    , href = \"" <> aMenu.mid
+    <> "\"\n" <> indent <> "    , mid = \"" <> aMenu.mid
+    <> "\"\n" <> indent <> "    , icon = " <> maybe "Nothing" (\i -> "Just (img [ src \"" <> i <> "\", width 32 ] [])") aMenu.icon
     <> "\n" <> indent <> "    , postIcon = Nothing"
     <> "\n" <> indent <> "    , params = Nothing"
     <> "\n" <> indent <> "  }"
   else
-    indent <> "Composed {\n" <> indent <> "   uid = \"" <> T.encodeUtf8 (T.toLower aMenu.label)
-    <> "\"\n" <> indent <> "    , icon = " <> maybe "Nothing" (\i -> "Just (img [ src \"" <> T.encodeUtf8 i <> "\", width 32 ] [])") aMenu.icon
-    <> "\n" <> indent <> "    , title = \"" <> T.encodeUtf8 aMenu.label
+    indent <> "Composed {\n" <> indent <> "   uid = \"" <> U.toLowerBs aMenu.label
+    <> "\"\n" <> indent <> "    , icon = " <> maybe "Nothing" (\i -> "Just (img [ src \"" <> i <> "\", width 32 ] [])") aMenu.icon
+    <> "\n" <> indent <> "    , title = \"" <> aMenu.label
     <> "\"\n" <> indent <> "    , children = " <> case genMenus (level + 1) aMenu.children of
       "" -> "[]"
       children -> "[\n" <> children <> "\n    ]"
@@ -107,9 +108,9 @@ main =
     run (dynFunctions, compContinuations)|]
   in
   templ_1 <> "\n"
-   <> Bs.intercalate "\n" (map (\aComp -> let modName = T.encodeUtf8 aComp.moduleName in "import Components." <> modName <> " as " <> modName) components)
+   <> Bs.intercalate "\n" (map (\aComp -> let modName = aComp.moduleName in "import Components." <> modName <> " as " <> modName) components)
    <> templ_2
-   <> Bs.intercalate "\n  , " (map (\aComp -> let modName = T.encodeUtf8 aComp.moduleName in "(\"" <> T.encodeUtf8 aComp.refID <> "\", " <> modName <> ".default, " <> modName <> ".continuations)") components)
+   <> Bs.intercalate "\n  , " (map (\aComp -> let modName = aComp.moduleName in "(\"" <> aComp.refID <> "\", " <> modName <> ".default, " <> modName <> ".continuations)") components)
    <> templ_3
 
 
@@ -240,12 +241,12 @@ showBodyCt _ jsonParams =
 showTableRows someRows = []
 
 |]
-    componentName = T.encodeUtf8 $ T.toLower component.moduleName
+    componentName = U.toLowerBs component.moduleName
     hsForwardFct = "hs_" <> componentName <> "_fetch"
     -- TODO: do a real encoding of the View fields:
     fieldDefs = [("field_1", "String"), ("field_2", "Int")]
   in
-  "module Components." <> T.encodeUtf8 component.moduleName
+  "module Components." <> component.moduleName
   <> Bs.concat [templ_1, hsForwardFct, templ_2
         , componentName, templ_3
         , componentName, templ_4
@@ -255,7 +256,7 @@ showTableRows someRows = []
         , componentName, templ_8
       ]
   <> Bs.intercalate "\n\n" (map E.spitFct component.functions)
- -- <> T.encodeUtf8 component.moduleName <> "\" ]]\n"
+ -- <> component.moduleName <> "\" ]]\n"
 
 
 buildHsFields :: [(Bs.ByteString, Bs.ByteString)] -> Bs.ByteString
@@ -279,8 +280,8 @@ typeDecoder fieldType = case fieldType of
   "Int" -> "Dec.int"
   _ -> "Dec.string"
 
-
-genFunction :: Mp.Map Bs.ByteString CompLocales -> T.Text -> Maybe ActionWindow -> [E.FunctionDef]
+-- TODO: find out what refID was supposed to do.
+genFunction :: Mp.Map Bs.ByteString LocalesPerKind -> Bs.ByteString -> Maybe ActionWindow -> [E.FunctionDef]
 genFunction locales refID mbActionWin =
   let
     mbDefaultLocales = Mp.lookup "en" locales
@@ -304,10 +305,10 @@ genFunction locales refID mbActionWin =
         subFcts = foldl (\accum (vName, viewDef) ->
             case viewDef of
               Tm.TreeDF attribs elements ->
-                Vw.genTree vName elements : accum
+                Vw.genTree (translateFieldName mbDefaultLocales actionWin.logicNameAW) vName elements : accum
               Tm.FormDF {} -> accum
           ) [] (Mp.toList actionWin.uiViewsAW)
-        xlatedLogicName = T.decodeUtf8 $ translateModelName mbDefaultLocales actionWin.logicNameAW
+        xlatedLogicName = translateModelName mbDefaultLocales actionWin.logicNameAW
       in
       [
         E.FunctionDef {
@@ -324,7 +325,7 @@ genFunction locales refID mbActionWin =
                   ([ E.div [ E.class_ "flex justify-between items-center mb-4" ]
                     [ E.h1 [ E.class_ "text-2xl text-gray-900 dark:text-white font-bold" ] [ E.text xlatedLogicName ] ]
                   ]
-                  <> [ E.ApplyEE (T.decodeUtf8 $ translateFieldName mbDefaultLocales actionWin.logicNameAW aFct.nameFD) [] | (aFct, _) <- subFcts ]
+                  <> [ E.ApplyEE aFct.nameFD [] | (aFct, _) <- subFcts ]
                   )
                 ]
           , events = concat [ aFct.events <> bFct.events | (aFct, bFct) <- subFcts ]
@@ -335,31 +336,15 @@ genFunction locales refID mbActionWin =
 type ModelLocale = Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Bs.ByteString)))
 -}
 
-translateModelName :: Maybe CompLocales -> T.Text -> Bs.ByteString
+translateModelName :: Maybe LocalesPerKind -> Bs.ByteString -> Bs.ByteString
 translateModelName mbLocales aName =
   let
-    modelName = T.encodeUtf8 aName
+    modelName = aName
   in
   case mbLocales of
     Nothing -> modelName
     Just locales -> fromMaybe modelName ( -- TODO: use the locale
         case Mp.lookup modelName locales.modelCL >>= Mp.lookup "name" >>= Mp.lookup ""  of
-          Nothing -> Nothing
-          Just cMap -> case Mp.keys cMap of
-            [] -> Nothing
-            (aKey : _) -> Just aKey
-      )
-
-translateFieldName :: Maybe CompLocales -> T.Text -> T.Text -> Bs.ByteString
-translateFieldName mbLocales fstName sndName =
-  let
-    modelName = T.encodeUtf8 fstName
-    fieldName = T.encodeUtf8 sndName
-  in
-  case mbLocales of
-    Nothing -> fieldName
-    Just locales -> fromMaybe fieldName (
-        case Mp.lookup modelName locales.fieldCL >>= Mp.lookup fieldName of
           Nothing -> Nothing
           Just cMap -> case Mp.keys cMap of
             [] -> Nothing

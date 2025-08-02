@@ -11,9 +11,9 @@ import qualified Generation.Sql as Sq
 import qualified Generation.Svg as Sv
 
 data FunctionDef = FunctionDef {
-  nameFD :: Text
+  nameFD :: Bs.ByteString
   , typeDef :: TypeDef
-  , argsFD :: [Text]
+  , argsFD :: [Bs.ByteString]
   , bodyFD :: ElmExpr
   , events :: [EventDef]
   }
@@ -21,8 +21,8 @@ data FunctionDef = FunctionDef {
 
 
 data EventDef = EventDef {
-  midED :: Text
-  , targetED :: Text
+  midED :: Bs.ByteString
+  , targetED :: Bs.ByteString
   }
   deriving (Show)
 
@@ -35,21 +35,21 @@ data TypeDef =
   | RecordTD [(Text, TypeDef)]
   | MonadTD Text TypeDef
   | ApplicTD TypeDef TypeDef
-  | VarTD Text
+  | VarTD Bs.ByteString
   deriving (Show)
 
 
 data ElmExpr =
-  NameEE Text
-  | LambdaEE [Text] ElmExpr
-  | ApplyEE Text [ElmExpr]
-  | LetEE [(Text, ElmExpr)] ElmExpr
+  NameEE Bs.ByteString
+  | LambdaEE [Bs.ByteString] ElmExpr
+  | ApplyEE Bs.ByteString [ElmExpr]
+  | LetEE [(Bs.ByteString, ElmExpr)] ElmExpr
   | IfEE ElmExpr ElmExpr ElmExpr
   | ArrayEE [ElmExpr]
   | ArrayAttribEE [AttributeHt]
   | TupleEE [ElmExpr]
-  | RecordEE [(Text, ElmExpr)]
-  | CaseEE ElmExpr [(Text, [ElmExpr])]
+  | RecordEE [(Bs.ByteString, ElmExpr)]
+  | CaseEE ElmExpr [(Bs.ByteString, [ElmExpr])]
   | ParentEE ElmExpr
   | LiteralEE ElmLiteral
   -- Specialized function application, for predefined Html functions.
@@ -59,7 +59,7 @@ data ElmExpr =
 
 
 data ElmLiteral =
-  StringL Text
+  StringL Bs.ByteString
   | IntL Int
   | FloatL Float
   deriving (Show)
@@ -118,7 +118,7 @@ data AttributeHt =
 div :: [AttributeHt] -> [ElmExpr] -> ElmExpr
 div = HtEE DivHE
 
-text :: Text -> ElmExpr
+text :: Bs.ByteString -> ElmExpr
 text aText = HtEE TextHE [] [LiteralEE (StringL aText)]
 
 input :: [AttributeHt] -> [ElmExpr] -> ElmExpr
@@ -198,82 +198,82 @@ nav = HtEE NavHE
 
 -- Htmx:
 
-strL :: Text -> ElmExpr
+strL :: Bs.ByteString -> ElmExpr
 strL aText = ApplyEE "Ht.strL" [LiteralEE (StringL aText)]
 
 intL :: Int -> ElmExpr
 intL aInt = ApplyEE "Ht.intL" [LiteralEE (IntL aInt)]
 
 
-htInvoke :: ElementHt -> Text -> Text -> [(Text, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
+htInvoke :: ElementHt -> Bs.ByteString -> Bs.ByteString -> [(Bs.ByteString, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
 htInvoke = genericHtInvoker "Ht.invoke"
 
 
-htInvokeWithSwap :: ElementHt -> Text -> Text -> [(Text, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
+htInvokeWithSwap :: ElementHt -> Bs.ByteString -> Bs.ByteString -> [(Bs.ByteString, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
 htInvokeWithSwap = genericHtInvoker "Ht.invokeWithSwap"
 
 
-genericHtInvoker :: Text -> ElementHt -> Text -> Text -> [(Text, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
+genericHtInvoker :: Bs.ByteString -> ElementHt -> Bs.ByteString -> Bs.ByteString -> [(Bs.ByteString, ElmExpr)] -> [AttributeHt] -> [ElmExpr] -> ElmExpr
 genericHtInvoker fctName eleHt targetID fctID params attribs =
   ComplexHtEE eleHt (ApplyEE fctName [
     LiteralEE (StringL targetID), LiteralEE (StringL fctID)
     , makeHxParams params, ArrayAttribEE attribs
   ])
 
-makeHxParams :: [(Text, ElmExpr)] -> ElmExpr
+makeHxParams :: [(Bs.ByteString, ElmExpr)] -> ElmExpr
 makeHxParams params =
   ArrayEE (map makeHxParam params)
 
-makeHxParam :: (Text, ElmExpr) -> ElmExpr
+makeHxParam :: (Bs.ByteString, ElmExpr) -> ElmExpr
 makeHxParam (aName, aParam) =
   TupleEE [LiteralEE (StringL aName), aParam]
 
 
 
 -- Attributes:
-class_ :: Text -> AttributeHt
+class_ :: Bs.ByteString -> AttributeHt
 class_ aText = ClassHA (LiteralEE (StringL aText))
 
-id :: Text -> AttributeHt
+id :: Bs.ByteString -> AttributeHt
 id aText = IdHA (LiteralEE (StringL aText))
 
-for_ :: Text -> AttributeHt
+for_ :: Bs.ByteString -> AttributeHt
 for_ aText = ForHA (LiteralEE (StringL aText))
 
-type_ :: Text -> AttributeHt
+type_ :: Bs.ByteString -> AttributeHt
 type_ aText = TypeHA (LiteralEE (StringL aText))
 
-placeholder :: Text -> AttributeHt
+placeholder :: Bs.ByteString -> AttributeHt
 placeholder aText = PlaceholderHA (LiteralEE (StringL aText))
 
 required :: Bool -> AttributeHt
 required = RequiredHA
 
-attribute :: Text -> Text -> AttributeHt
+attribute :: Bs.ByteString -> Bs.ByteString -> AttributeHt
 attribute aName aValue = AttributeHA (LiteralEE (StringL aName)) (LiteralEE (StringL aValue))
 
-value :: Text -> AttributeHt
+value :: Bs.ByteString -> AttributeHt
 value aText = ValueHA (LiteralEE (StringL aText))
 
-href :: Text -> AttributeHt
+href :: Bs.ByteString -> AttributeHt
 href aText = HrefHA (LiteralEE (StringL aText))
 
-scope :: Text -> AttributeHt
+scope :: Bs.ByteString -> AttributeHt
 scope aText = ScopeHA (LiteralEE (StringL aText))
 
-title :: Text -> AttributeHt
+title :: Bs.ByteString -> AttributeHt
 title aText = TitleHA (LiteralEE (StringL aText))
 
 -- Show a function definition:
 spitFct :: FunctionDef -> Bs.ByteString
-spitFct aFct = T.encodeUtf8 aFct.nameFD <> " =\n" <> tabBy 1 (spitElm 1 aFct.bodyFD)
+spitFct aFct = aFct.nameFD <> " =\n" <> tabBy 1 (spitElm 1 aFct.bodyFD)
 
 
 -- Generate text from an ElmExpr:
 spitElm :: Int -> ElmExpr -> Bs.ByteString
-spitElm level (NameEE aName) = T.encodeUtf8 aName
-spitElm level (LambdaEE varNames aExpr) = "(\\" <> Bs.intercalate " " (map T.encodeUtf8 varNames) <> " ->\n" <> tabBy (level + 1) (spitElm (level + 1) aExpr) <> "\n)"
-spitElm level (ApplyEE aName aExprs) = T.encodeUtf8 aName <> (if null aExprs then "" else " " <> Bs.intercalate " " (map (spitElm (level + 1)) aExprs))
+spitElm level (NameEE aName) = aName
+spitElm level (LambdaEE varNames aExpr) = "(\\" <> Bs.intercalate " " varNames <> " ->\n" <> tabBy (level + 1) (spitElm (level + 1) aExpr) <> "\n)"
+spitElm level (ApplyEE aName aExprs) = aName <> (if null aExprs then "" else " " <> Bs.intercalate " " (map (spitElm (level + 1)) aExprs))
 spitElm level (LetEE aBindings aExpr) = "let\n" <> Bs.intercalate "\n" (map (tabBy (level + 1) . spitBinding (level + 1)) aBindings) <> "\n" <> tabBy level "in\n" <> tabBy level (spitElm (level + 1) aExpr)
 spitElm level (IfEE testExpr trueExpr falseExpr) = "if " <> spitElm level testExpr <> " then\n" <> tabBy (level + 1) (spitElm level trueExpr) <> "\n" <> tabBy level "else\n" <> tabBy (level + 1) (spitElm level falseExpr)
 spitElm level (ArrayEE aExprs) = "[" <> Bs.intercalate ", " (map (spitElm level) aExprs) <> "]"
@@ -294,17 +294,17 @@ spitElm level (ComplexHtEE eleHt aExpr aChildren) =
     <> Bs.intercalate ", " (map (spitElm (level + 1)) aChildren) <> "]"
 
 
-spitBinding :: Int -> (Text, ElmExpr) -> Bs.ByteString
-spitBinding level (aName, aExpr) = T.encodeUtf8 aName <> " = " <> spitElm level aExpr
+spitBinding :: Int -> (Bs.ByteString, ElmExpr) -> Bs.ByteString
+spitBinding level (aName, aExpr) = aName <> " = " <> spitElm level aExpr
 
-spitField :: Int -> (Text, ElmExpr) -> Bs.ByteString
-spitField level (aName, aExpr) = T.encodeUtf8 aName <> " = " <> spitElm level aExpr
+spitField :: Int -> (Bs.ByteString, ElmExpr) -> Bs.ByteString
+spitField level (aName, aExpr) = aName <> " = " <> spitElm level aExpr
 
-spitCase :: Int -> (Text, [ElmExpr]) -> Bs.ByteString
-spitCase level (aName, aExprs) = T.encodeUtf8 aName <> " -> " <> Bs.intercalate " " (map (spitElm (level + 1)) aExprs)
+spitCase :: Int -> (Bs.ByteString, [ElmExpr]) -> Bs.ByteString
+spitCase level (aName, aExprs) = aName <> " -> " <> Bs.intercalate " " (map (spitElm (level + 1)) aExprs)
 
 spitLiteral :: ElmLiteral -> Bs.ByteString
-spitLiteral (StringL aString) = "\"" <> T.encodeUtf8 aString <> "\""
+spitLiteral (StringL aString) = "\"" <> aString <> "\""
 spitLiteral (IntL aInt) = T.encodeUtf8 (T.pack (show aInt))
 spitLiteral (FloatL aFloat) = T.encodeUtf8 (T.pack (show aFloat))
 

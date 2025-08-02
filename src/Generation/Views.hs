@@ -2,30 +2,37 @@ module Generation.Views where
 
 import Control.Monad (foldM)
 
+import qualified Data.ByteString as Bs
+import qualified Data.Map as Mp
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 
 import qualified Parsing.Xml as Xm
 import qualified Tryton.Types as Tm
 import qualified Generation.Elm as E
 import qualified Generation.Svg as Sv
-
+import qualified Generation.EwTypes as Ew
 
 -- TODO: add return of errors to the caller.
-genTree :: T.Text -> [Tm.TreeElement] -> (E.FunctionDef, E.FunctionDef)
-genTree vName tElements =
+-- (translateFieldName mbDefaultLocales actionWin.logicNameAW 
+genTree :: (Bs.ByteString -> Bs.ByteString ) -> Bs.ByteString -> [Tm.TreeElement] -> (E.FunctionDef, E.FunctionDef)
+genTree fieldXlator vName tElements =
   let
     columns = foldr (\anElement accum -> case anElement of
         Tm.FieldTE attribs nFixes ->
           case procTreeFields attribs of
             Left err ->
-              E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text (T.pack err) ] : accum
+              E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text . T.encodeUtf8 . T.pack $ err ] : accum
             Right (mbName, mbWidget, mbString) ->
-              E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text (fromMaybe (fromMaybe "<no-name>" mbName) mbString) ] : accum
+              let
+                xlatedFieldName = fieldXlator (fromMaybe (fromMaybe "<no-name>" mbName) mbString)
+              in
+              E.td [E.scope "col", E.class_ "px-4 py-3 max-w-[150px] truncate"] [ E.text xlatedFieldName ] : accum
         Tm.ButtonTE attribs ->
           case procTreeButton attribs of
             Left err ->
-              E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text (T.pack err) ] : accum
+              E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.text . T.encodeUtf8 . T.pack $ err ] : accum
             Right (mbName, mbHelp, mbString) ->
               E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.button [E.class_ "btn btn-primary" ] [ E.text (fromMaybe (fromMaybe "<no-name>" mbHelp) mbString) ] ] : accum
       ) [] tElements
@@ -48,31 +55,31 @@ genTree vName tElements =
   in
   ( tableFct, tRowFct )
 
-procTreeFields :: [Tm.Attribute] -> Either String (Maybe T.Text, Maybe T.Text, Maybe T.Text)
+procTreeFields :: [Tm.Attribute] -> Either String (Maybe Bs.ByteString, Maybe Bs.ByteString, Maybe Bs.ByteString)
 procTreeFields =
   foldM (\(mbName, mbWidget, mbString) anAttrib -> case anAttrib.nameA of
-      "name" -> Right (Just anAttrib.valueA, mbWidget, mbString)
-      "widget" -> Right (mbName, Just anAttrib.valueA, mbString)
-      "string" -> Right (mbName, mbWidget, Just anAttrib.valueA)
+      "name" -> Right (Just $ T.encodeUtf8 anAttrib.valueA, mbWidget, mbString)
+      "widget" -> Right (mbName, Just $ T.encodeUtf8 anAttrib.valueA, mbString)
+      "string" -> Right (mbName, mbWidget, Just $ T.encodeUtf8 anAttrib.valueA)
       "expand" -> Right (mbName, mbWidget, mbString)
       "tree_invisible" -> Right (mbName, mbWidget, mbString)
       "readonly" -> Right (mbName, mbWidget, mbString)
       "icon" -> Right (mbName, mbWidget, mbString)
-      _ -> Left ("Unknown attribute: " <> T.unpack anAttrib.nameA)
+      _ -> Left ("@[procTreeFields] unknown attribute: " <> T.unpack anAttrib.nameA)
     ) (Nothing, Nothing, Nothing)
 
 
-procTreeButton :: [Tm.Attribute] -> Either String (Maybe T.Text, Maybe T.Text, Maybe T.Text)
+procTreeButton :: [Tm.Attribute] -> Either String (Maybe Bs.ByteString, Maybe Bs.ByteString, Maybe Bs.ByteString)
 procTreeButton =
   foldM (\(mbName, mbHelp, mbString) anAttrib -> case anAttrib.nameA of
-      "name" -> Right (Just anAttrib.valueA, mbHelp, mbString)
-      "help" -> Right (mbName, Just anAttrib.valueA, mbString)
-      "string" -> Right (mbName, mbHelp, Just anAttrib.valueA)
-      _ -> Left "Unknown attribute"
+      "name" -> Right (Just $ T.encodeUtf8 anAttrib.valueA, mbHelp, mbString)
+      "help" -> Right (mbName, Just $ T.encodeUtf8 anAttrib.valueA, mbString)
+      "string" -> Right (mbName, mbHelp, Just $ T.encodeUtf8 anAttrib.valueA)
+      _ -> Left ("@[procTreeButton] unknown attribute: " <> T.unpack anAttrib.nameA)
     ) (Nothing, Nothing, Nothing)
 
 
-genForm :: T.Text -> Tm.FormElement -> E.FunctionDef
+genForm :: Bs.ByteString -> Tm.FormElement -> E.FunctionDef
 genForm vName aForm =
   let
     (content, events) = formBuilder vName aForm
@@ -86,7 +93,7 @@ genForm vName aForm =
   }
 
 
-formBuilder :: T.Text -> Tm.FormElement -> (E.ElmExpr, [E.EventDef])
+formBuilder :: Bs.ByteString -> Tm.FormElement -> (E.ElmExpr, [E.EventDef])
 formBuilder eventPrefix aForm =
   let
     formEvent = E.EventDef (eventPrefix <> "_fResult") (eventPrefix <> "_addItem")
@@ -96,7 +103,7 @@ formBuilder eventPrefix aForm =
   (content, [formEvent])
 
 
-tableBuilder :: T.Text -> [E.ElmExpr] -> (E.ElmExpr, [E.EventDef])
+tableBuilder :: Bs.ByteString -> [E.ElmExpr] -> (E.ElmExpr, [E.EventDef])
 tableBuilder eventPrefix columns =
   let
     tbodyEvent = E.EventDef (eventPrefix <> "_tbody") (eventPrefix <> "_fetch")
@@ -308,16 +315,16 @@ tableBuilder eventPrefix columns =
                     ]
                 ]
               , E.div
-                  [ E.class_ "overflow-x-auto"
+                  [ E.class_ "w-full overflow-x-auto"
                   ]
                   [ E.table
-                      [ E.class_ "w-full text-sm text-left text-gray-500 dark:text-gray-400"
+                      [ E.class_ "table-auto min-w-full text-sm text-left text-gray-500 dark:text-gray-400 border-collapse"
                       ]
                       [ E.thead
                           [ E.class_ "text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400"
                           ]
                           [
-                            E.tr [] columns
+                            E.tr [ E.class_ "overflow-x-auto" ] columns
                           , E.tbody [ E.id "tbody"] [
 
                             ]

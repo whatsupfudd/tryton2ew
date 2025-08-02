@@ -38,9 +38,9 @@ import qualified Hasql.TH as TH
   Bs.writeFile filePath (modDef <> tmpl_imports <> "\n\n" <> body)
 
 
-genSqlOps :: Mp.Map T.Text Sq.SqlTable -> Mp.Map T.Text Py.TrytonModel -> Mp.Map T.Text (Ew.SqlFct, Ew.SqlFct)
+genSqlOps :: Mp.Map T.Text Sq.SqlTable -> Mp.Map Bs.ByteString Py.TrytonModel -> Mp.Map Bs.ByteString (Ew.SqlFct, Ew.SqlFct)
 genSqlOps tableMap ttModels =
-  Mp.map (\tableDef ->
+  Mp.mapKeys T.encodeUtf8 $ Mp.map (\tableDef ->
       let
         fetcher = sqlGenFetcher tableDef ttModels
         inserter = sqlGenInserter tableDef ttModels
@@ -50,7 +50,7 @@ genSqlOps tableMap ttModels =
 
 
 -- TODO: figure out how to make explicit the order of the fields in select.
-sqlGenFetcher :: Sq.SqlTable -> Mp.Map T.Text Py.TrytonModel -> Ew.SqlFct
+sqlGenFetcher :: Sq.SqlTable -> Mp.Map Bs.ByteString Py.TrytonModel -> Ew.SqlFct
 sqlGenFetcher tableDef ttModels =
   let
     sqlTableName = Sq.modelToSqlName tableDef.nameST
@@ -80,7 +80,7 @@ sqlGenFetcher tableDef ttModels =
   }
 
 
-sqlGenInserter :: Sq.SqlTable -> Mp.Map T.Text Py.TrytonModel -> Ew.SqlFct
+sqlGenInserter :: Sq.SqlTable -> Mp.Map Bs.ByteString Py.TrytonModel -> Ew.SqlFct
 sqlGenInserter tableDef ttModels =
   let
     sqlTableName = Sq.modelToSqlName tableDef.nameST

@@ -1,26 +1,29 @@
 module Generation.EwTypes where
 
 import qualified Data.ByteString as Bs
+import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Mp
 import qualified Data.Text as T
 
 import qualified Parsing.Python as Py
 import qualified Generation.Elm as E
+import qualified Generation.Utils as U
 
 import qualified Tryton.Types as Tm
 
 
 type Locales = Mp.Map Bs.ByteString Bs.ByteString
+type ArrayLocales = Mp.Map Bs.ByteString [Bs.ByteString]
 
 defaultLocales :: Locales
 defaultLocales = Mp.empty
 
 type ModelLocale = Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales))
 
-data CompLocales = CompLocales {
+data LocalesPerKind = LocalesPerKind {
   -- models: <model-name> => <key>: name, desc, text, string => value => dict-key => dict-value
   modelCL :: ModelLocale
-  , fieldCL :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales)
+  , fieldCL :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Bs.ByteString)
   , helpCL :: Mp.Map Bs.ByteString Locales
   , reportCL :: Mp.Map Bs.ByteString Locales
   -- selections: appointment_type, state, urgency, visit_type, ...
@@ -30,9 +33,19 @@ data CompLocales = CompLocales {
   , errors :: [Bs.ByteString]
   }
   deriving Show
+{-
+parse:
+ <kind>:<model-name>,<field-name>:? + <msgid==value>
+ * ByteString
 
+Gen:
+ <phase of gen: model> -> insert translation ==> getValue by model-name.
+ <phase of gen: field> -> getValue by model-name, field-name.
+ --> output: bytestring | ActWin/Views/...: Text.
+ --> Map T.Text 
+-}
 
-defaultCompLocales = CompLocales {
+defaultLocalesPerKind = LocalesPerKind {
   modelCL = Mp.empty
   , fieldCL = Mp.empty
   , helpCL = Mp.empty
@@ -42,6 +55,15 @@ defaultCompLocales = CompLocales {
   , wizardButtonCL = Mp.empty
   , errors = []
 }
+
+translateFieldName :: Maybe LocalesPerKind -> Bs.ByteString -> Bs.ByteString -> Bs.ByteString
+translateFieldName mbLocales modelName fieldName =
+  case mbLocales of
+    Nothing -> "t1: " <> fieldName
+    Just modelMap -> 
+      case Mp.lookup modelName modelMap.fieldCL of
+        Nothing -> "t2: " <> fieldName
+        Just fieldMap -> fromMaybe fieldName (Mp.lookup (U.toLowerBs fieldName) fieldMap)
 
 
 data EwContext = EwContext {
@@ -53,8 +75,8 @@ data EwContext = EwContext {
 
 data Component = Component {
   path :: FilePath
-  , moduleName :: T.Text
-  , refID :: T.Text
+  , moduleName :: Bs.ByteString
+  , refID :: Bs.ByteString
   , types :: [E.TypeDef]
   , functions :: [E.FunctionDef]
   , locales :: Mp.Map T.Text Locales    -- keyword -> values per locale (en, fr, etc.)
@@ -64,44 +86,44 @@ data Component = Component {
   deriving (Show)
 
 data Menu = Menu {
-  label :: T.Text
-  , icon :: Maybe T.Text
-  , mid :: T.Text
+  label :: Bs.ByteString
+  , icon :: Maybe Bs.ByteString
+  , mid :: Bs.ByteString
   , children :: [Menu]
-  , action :: Maybe T.Text
+  , action :: Maybe Bs.ByteString
   }
   deriving (Show)
 
 data AppEntry = AppEntry {
-  endpoint :: T.Text
-  , dynLabel :: T.Text
+  endpoint :: Bs.ByteString
+  , dynLabel :: Bs.ByteString
 }
 
 
 data IconDef = IconDef {
-  nameIc :: T.Text
-  , pathIc :: T.Text
+  nameIc :: Bs.ByteString
+  , pathIc :: Bs.ByteString
   }
   deriving (Show, Eq)
 
 
 data ActionWindow = ActionWindow {
-  idAW :: T.Text
-  , logicNameAW :: T.Text
-  , domainAW :: Maybe T.Text
-  , contextAW :: Maybe T.Text
+  idAW :: Bs.ByteString
+  , logicNameAW :: Bs.ByteString
+  , domainAW :: Maybe Bs.ByteString
+  , contextAW :: Maybe Bs.ByteString
   , optionsAW :: [AwDomain]
-  , viewLinksAW :: [(T.Text, Int)]  -- extracts from 'ir.action.act_window.view' => (ir.ui.view:name, sequence)
-  , viewModelLinksAW :: Mp.Map T.Text (T.Text, T.Text)  -- 'ir.ui.view' => (viewDef name, viewDef type)
-  , uiViewsAW :: Mp.Map T.Text Tm.Definition
+  , viewLinksAW :: [(Bs.ByteString, Int)]  -- extracts from 'ir.action.act_window.view' => (ir.ui.view:name, sequence)
+  , viewModelLinksAW :: Mp.Map Bs.ByteString (Bs.ByteString, Bs.ByteString)  -- 'ir.ui.view' => (viewDef name, viewDef type)
+  , uiViewsAW :: Mp.Map Bs.ByteString Tm.Definition
   , logicView :: Maybe Py.TrytonModel
   }
   deriving (Show)
 
 
 data AwDomain = AwDomain {
-  nameAD :: T.Text
-  , filterAD :: Maybe T.Text
+  nameAD :: Bs.ByteString
+  , filterAD :: Maybe Bs.ByteString
   , sequenceAD :: Int
   }
   deriving (Show)
@@ -109,19 +131,19 @@ data AwDomain = AwDomain {
 
 data Fetcher = Fetcher {
   midFT :: Bs.ByteString
-  , handlerFT :: T.Text
-  , functionFT :: T.Text
-  , decoderFT :: T.Text
-  , hsForwardFT :: T.Text
-  , continuationFT :: T.Text
+  , handlerFT :: Bs.ByteString
+  , functionFT :: Bs.ByteString
+  , decoderFT :: Bs.ByteString
+  , hsForwardFT :: Bs.ByteString
+  , continuationFT :: Bs.ByteString
   }
   deriving (Show)
 
 data HsForward = HsForward {
   nameHF :: Bs.ByteString
-  , sqlFctHF :: T.Text
-  , jsDecoderHF :: T.Text
-  , jsEncoderHF :: T.Text
+  , sqlFctHF :: Bs.ByteString
+  , jsDecoderHF :: Bs.ByteString
+  , jsEncoderHF :: Bs.ByteString
   , codeHF :: Bs.ByteString
   }
   deriving (Show)
@@ -134,8 +156,8 @@ data SqlFct = SqlFct {
   deriving (Show)
 
 data Inserter = Inserter {
-  midIn :: T.Text
-  , nameIn :: T.Text
+  midIn :: Bs.ByteString
+  , nameIn :: Bs.ByteString
   }
   deriving (Show)
 
