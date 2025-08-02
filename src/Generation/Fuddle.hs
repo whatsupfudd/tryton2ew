@@ -14,10 +14,10 @@ import qualified Tryton.Types as Tm
 import qualified Generation.Elm as E
 import qualified Generation.Views as Vw
 import qualified Generation.Utils as U
-import Generation.EwTypes
+import qualified Generation.EwTypes as Ew
 
 
-leftPartAItems :: [Menu] -> Bs.ByteString
+leftPartAItems :: [Ew.Menu] -> Bs.ByteString
 leftPartAItems menus =
   let
     templ_1 = [r|module Protected.LeftMenuNav exposing (leftPartAItems)
@@ -36,7 +36,7 @@ leftPartAItems = [|]
     <> "\n  ]"
 
 
-genMenus :: Int -> [Menu] -> Bs.ByteString
+genMenus :: Int -> [Ew.Menu] -> Bs.ByteString
 genMenus level =
   let
     indent = Bs.replicate (level * 2) 32
@@ -52,7 +52,7 @@ genMenus level =
 
 
 
-genLeftMenuItem :: Int -> Menu -> Bs.ByteString
+genLeftMenuItem :: Int -> Ew.Menu -> Bs.ByteString
 genLeftMenuItem level aMenu =
   let
     indent = Bs.replicate (level * 2) 32
@@ -75,7 +75,7 @@ genLeftMenuItem level aMenu =
     <> "\n" <> indent <> "  }"
 
 
-genDynRoutes :: [Component] -> Bs.ByteString
+genDynRoutes :: [Ew.Component] -> Bs.ByteString
 genDynRoutes components =
   let
     templ_1 = [r|module DynRoutes exposing (main)
@@ -108,13 +108,27 @@ main =
     run (dynFunctions, compContinuations)|]
   in
   templ_1 <> "\n"
-   <> Bs.intercalate "\n" (map (\aComp -> let modName = aComp.moduleName in "import Components." <> modName <> " as " <> modName) components)
+   <> Bs.intercalate "\n" (map (\aComp ->
+        let
+          modName = case Bs.split 46 aComp.moduleName of -- 46 : '.'
+            [] -> "@[genDynRoutes] err: module name isn't valid: " <> aComp.moduleName
+            nonEmptyList -> last nonEmptyList
+        in
+        "import " <> aComp.moduleName <> " as " <> modName) components
+      )
    <> templ_2
-   <> Bs.intercalate "\n  , " (map (\aComp -> let modName = aComp.moduleName in "(\"" <> aComp.refID <> "\", " <> modName <> ".default, " <> modName <> ".continuations)") components)
+   <> Bs.intercalate "\n  , " (map (\aComp ->
+        let
+          modName = case Bs.split 46 aComp.moduleName of -- 46 : '.'
+            [] -> "@[genDynRoutes] err: module name isn't valid: " <> aComp.moduleName
+            nonEmptyList -> last nonEmptyList
+          in
+          "(\"" <> aComp.refID <> "\", " <> modName <> ".default, " <> modName <> ".continuations)") components
+      )
    <> templ_3
 
 
-renderComponent :: Component -> Bs.ByteString
+renderComponent :: Ew.Component -> Bs.ByteString
 renderComponent component =
   let
     templ_1 = [r| exposing (default, continuations)
@@ -135,6 +149,8 @@ import Json.Encode as Enc
 import Json.Decode as Dec
 
 import FunctionRouter exposing (DynInvokeFct, CompContinuation, InvokeResult (..), NativeParams)
+
+import Components.TreeView as Tv
 
 -- import Fuddle.Routes as R
 import Fuddle.Locales exposing (l)
@@ -241,12 +257,14 @@ showBodyCt _ jsonParams =
 showTableRows someRows = []
 
 |]
-    componentName = U.toLowerBs component.moduleName
+    componentName = case Bs.split 46 component.moduleName of -- 46 : '.'
+      [] -> "@[genComponent] err: module name isn't valid: " <> component.moduleName
+      nonEmptyList -> U.toLowerBs . last $ nonEmptyList
     hsForwardFct = "hs_" <> componentName <> "_fetch"
     -- TODO: do a real encoding of the View fields:
     fieldDefs = [("field_1", "String"), ("field_2", "Int")]
   in
-  "module Components." <> component.moduleName
+  "module " <> component.moduleName
   <> Bs.concat [templ_1, hsForwardFct, templ_2
         , componentName, templ_3
         , componentName, templ_4
@@ -281,7 +299,7 @@ typeDecoder fieldType = case fieldType of
   _ -> "Dec.string"
 
 -- TODO: find out what refID was supposed to do.
-genFunction :: Mp.Map Bs.ByteString LocalesPerKind -> Bs.ByteString -> Maybe ActionWindow -> [E.FunctionDef]
+genFunction :: Mp.Map Bs.ByteString Ew.LocalesPerKind -> Bs.ByteString -> Maybe Ew.ActionWindow -> [E.FunctionDef]
 genFunction locales refID mbActionWin =
   let
     mbDefaultLocales = Mp.lookup "en" locales
@@ -305,10 +323,10 @@ genFunction locales refID mbActionWin =
         subFcts = foldl (\accum (vName, viewDef) ->
             case viewDef of
               Tm.TreeDF attribs elements ->
-                Vw.genTree (translateFieldName mbDefaultLocales actionWin.logicNameAW) vName elements : accum
+                Vw.genTree (\fieldName -> Ew.translateName mbDefaultLocales (Ew.FieldLK (actionWin.logicNameAW, fieldName))) vName elements : accum
               Tm.FormDF {} -> accum
           ) [] (Mp.toList actionWin.uiViewsAW)
-        xlatedLogicName = translateModelName mbDefaultLocales actionWin.logicNameAW
+        xlatedLogicName = Ew.translateName mbDefaultLocales (Ew.ModelLK actionWin.logicNameAW)
       in
       [
         E.FunctionDef {
@@ -335,18 +353,3 @@ genFunction locales refID mbActionWin =
 {-
 type ModelLocale = Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Bs.ByteString)))
 -}
-
-translateModelName :: Maybe LocalesPerKind -> Bs.ByteString -> Bs.ByteString
-translateModelName mbLocales aName =
-  let
-    modelName = aName
-  in
-  case mbLocales of
-    Nothing -> modelName
-    Just locales -> fromMaybe modelName ( -- TODO: use the locale
-        case Mp.lookup modelName locales.modelCL >>= Mp.lookup "name" >>= Mp.lookup ""  of
-          Nothing -> Nothing
-          Just cMap -> case Mp.keys cMap of
-            [] -> Nothing
-            (aKey : _) -> Just aKey
-      )

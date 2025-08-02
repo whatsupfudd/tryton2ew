@@ -89,7 +89,7 @@ generateApp destPath tApp =
       in do
       putStrLn $ "@[generateApp] # components: " <> show (length components)
       putStrLn $ "@[generateApp] allInstances: " <> L.intercalate "\n  , " (map (\(k, v) -> T.unpack k <> " : " <> show (length v)) (Mp.toList tApp.instancesByKindTA))
-      -- putStrLn $ "@[generateApp] .po(t) parsing errors: " <> show (errors <$> enoLocales)
+      putStrLn $ "@[generateApp] .po(t) parsing errors: " <> show (errors <$> enLocales)
       -- putStrLn $ "@[generateApp] field locales: " <> showFieldLocales enLocales
       TIO.writeFile (destPath </> "wapp/Protected/LeftMenuNav.elm") (T.decodeUtf8 renderedMenus)
       mapM_ (\(fName, (fetchOp, insertOp)) -> do
@@ -582,10 +582,11 @@ genComponents actionWindows viewDefs leftMenus sqlOps locales =
         mbActionWindow = case aMenu.action of
           Nothing -> Nothing
           Just actionID -> Mp.lookup actionID actionWindows
-        fileName = "wapp/Components/" <> T.unpack (T.decodeUtf8 componentName) <> ".elm"
+
+        fileName = "wapp/Components/Frames/" <> T.unpack (T.decodeUtf8 componentName) <> ".elm"
         topComp = Component {
               path = fileName
-            , moduleName = componentName
+            , moduleName = "Components.Frames." <> componentName
             , refID = aMenu.mid
             , types = []
             , functions = Fd.genFunction locales aMenu.mid mbActionWindow

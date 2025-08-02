@@ -4,6 +4,7 @@ import qualified Data.ByteString as Bs
 import Data.Maybe (fromMaybe)
 import qualified Data.Map.Strict as Mp
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 
 import qualified Parsing.Python as Py
 import qualified Generation.Elm as E
@@ -19,6 +20,18 @@ defaultLocales :: Locales
 defaultLocales = Mp.empty
 
 type ModelLocale = Mp.Map Bs.ByteString (Mp.Map Bs.ByteString (Mp.Map Bs.ByteString Locales))
+
+data TranslateParams =
+    ModelLK Bs.ByteString
+  | FieldLK (Bs.ByteString, Bs.ByteString)
+  | HelpLK
+  | ReportLK
+  | SelectionLK
+  | ViewLK
+  | WizardButtonLK
+  | ErrorLK
+  deriving (Show, Eq)
+
 
 data LocalesPerKind = LocalesPerKind {
   -- models: <model-name> => <key>: name, desc, text, string => value => dict-key => dict-value
@@ -56,14 +69,28 @@ defaultLocalesPerKind = LocalesPerKind {
   , errors = []
 }
 
-translateFieldName :: Maybe LocalesPerKind -> Bs.ByteString -> Bs.ByteString -> Bs.ByteString
-translateFieldName mbLocales modelName fieldName =
-  case mbLocales of
-    Nothing -> "t1: " <> fieldName
-    Just modelMap -> 
-      case Mp.lookup modelName modelMap.fieldCL of
-        Nothing -> "t2: " <> fieldName
-        Just fieldMap -> fromMaybe fieldName (Mp.lookup (U.toLowerBs fieldName) fieldMap)
+
+translateName :: Maybe LocalesPerKind -> TranslateParams -> Bs.ByteString
+translateName mbLocales kind =
+  case kind of
+    ModelLK modelName ->
+      maybe modelName (\locales ->
+        fromMaybe modelName ( -- TODO: use the locale
+          case Mp.lookup modelName locales.modelCL >>= Mp.lookup "name" >>= Mp.lookup ""  of
+            Nothing -> Nothing
+            Just cMap -> case Mp.keys cMap of
+              [] -> Nothing
+              (aKey : _) -> Just aKey
+        )
+      ) mbLocales
+    FieldLK (modelName, fieldName) -> 
+      maybe fieldName (\locales ->
+          fromMaybe fieldName (
+              Mp.lookup modelName locales.fieldCL >>= Mp.lookup (U.toLowerBs fieldName)
+          )
+        ) mbLocales
+    -- TODO: implement other kinds of dereferencing for translation:
+    _ -> "@[translateName] kind err: " <> (T.encodeUtf8 . T.pack . show) kind
 
 
 data EwContext = EwContext {
