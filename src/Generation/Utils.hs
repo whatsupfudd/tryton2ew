@@ -25,3 +25,16 @@ upperSnake aWord = Bs.intercalate "_" (map (\w -> BsC.cons (C.toUpper (BsC.head 
 
 toLowerBs :: Bs.ByteString -> Bs.ByteString
 toLowerBs = Bs.map W8.toLower
+
+convertModuleNameToHsFctName :: Bs.ByteString -> Bs.ByteString
+convertModuleNameToHsFctName oriName =
+  Bs.intercalate "_" (concatMap (Bs.split 45) (Bs.split 46 oriName))  -- _ : 95, - : 45, . : 46
+
+
+convertModuleNameGhToHs :: Bs.ByteString -> Bs.ByteString
+convertModuleNameGhToHs oriName =
+  let
+    nameParts = concatMap (Bs.split 95) (concatMap (Bs.split 45) (Bs.split 46 oriName))  -- _ : 95, - : 45, . : 46
+  in
+  Bs.intercalate "_" (map capitalizeBs nameParts)
+

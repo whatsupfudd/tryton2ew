@@ -182,7 +182,7 @@ spitModel table =
           TimeDeltaSFK ->
             Just "interval"
           TimestampSFK ->
-            Just "timestamp"
+            Just "timestamptz"
           BinarySFK ->
             Just "bytea"
           SelectionSFK ->

@@ -37,7 +37,7 @@ genTree fieldXlator vName tElements =
               E.td [E.scope "col", E.class_ "px-4 py-3"] [ E.button [E.class_ "btn btn-primary" ] [ E.text (fromMaybe (fromMaybe "<no-name>" mbHelp) mbString) ] ] : accum
       ) [] tElements
     eventPrefix = vName
-    (content, events) = tableBuilderB eventPrefix columns
+    (content, events) = tableBuilder eventPrefix columns
     tableFct = E.FunctionDef {
             nameFD = vName
         , typeDef = E.StringTD
@@ -103,13 +103,13 @@ formBuilder eventPrefix aForm =
   (content, [formEvent])
 
 
-tableBuilderB :: Bs.ByteString -> [E.ElmExpr] -> (E.ElmExpr, [E.EventDef])
-tableBuilderB eventPrefix columns =
+tableBuilder :: Bs.ByteString -> [E.ElmExpr] -> (E.ElmExpr, [E.EventDef])
+tableBuilder eventPrefix columns =
   (E.ApplyEE "Tv.render" (E.LiteralEE (E.StringL eventPrefix) : [E.ArrayEE columns])
     , [E.EventDef (eventPrefix <> "_tbody") (eventPrefix <> "_fetch")]
   )
 
-
+{-
 tableBuilder :: Bs.ByteString -> [E.ElmExpr] -> (E.ElmExpr, [E.EventDef])
 tableBuilder eventPrefix columns =
   let
@@ -454,3 +454,4 @@ tableBuilder eventPrefix columns =
 
   in
     (content, [ tbodyEvent ])
+-}

@@ -93,9 +93,12 @@ generateApp destPath tApp =
       -- putStrLn $ "@[generateApp] field locales: " <> showFieldLocales enLocales
       TIO.writeFile (destPath </> "wapp/Protected/LeftMenuNav.elm") (T.decodeUtf8 renderedMenus)
       mapM_ (\(fName, (fetchOp, insertOp)) -> do
-          -- putStrLn $ "@[generateApp] genSqlFile: " <> T.unpack fName
-          Hs.genSqlFile (destPath </> "HsLib") (Sq.modelToSqlName fName) [fetchOp, insertOp]
+          -- putStrLn $ "@[generateApp] genSqlFctFile: " <> T.unpack fName
+          Hs.genSqlFctFile (destPath </> "HsLib/DB") "Wapp.Apps.GnuHealth.DB." (Sq.modelToSqlName fName) [fetchOp, insertOp]
           ) (Mp.toList sqlOps) -- (Mp.toList $ Mp.unions
+      Hs.genFctDispatcher (destPath </> "HsLib/FctDispatcher.hs") sqlOps
+      Hs.genDbModuleImport (destPath </> "HsLib/DB.hs") (Mp.keys sqlOps)
+      Hs.genNativeLibDef (destPath </> "HsLib/nativeLib.txt")
       mapM_ (\aComp -> do
           -- putStrLn $ "@[generateApp] saveComponent: " <> T.unpack aComp.refID
           saveComponent destPath aComp
@@ -158,7 +161,7 @@ generateAppV0 destPath uiDefs@(_, classInstances, viewDefs) tableMap locales log
       TIO.writeFile (destPath </> "yamlEntries.txt") $ T.decodeUtf8 yamlEntries
       TIO.writeFile (destPath </> "compLocales.txt") $ T.pack (show consoLocales)
       mapM_ (\(fName, (fetchOp, insertOp)) ->
-          Hs.genSqlFile (destPath </> "HsLib") (Sq.modelToSqlName (T.encodeUtf8 fName)) [fetchOp, insertOp]) (Mp.toList sqlOps)
+          Hs.genSqlFctFile (destPath </> "HsLib") (Sq.modelToSqlName (T.encodeUtf8 fName)) [fetchOp, insertOp]) (Mp.toList sqlOps)
       mapM_ (saveComponent destPath) components
       pure $ Right ()
 -}
@@ -574,11 +577,11 @@ genLeftMenu (menuItems, modelDefs, _) locales =
   Right menus
 
 
-genComponents :: Mp.Map Bs.ByteString ActionWindow -> Tm.ViewDefs -> [Menu] -> Mp.Map Bs.ByteString (SqlFct, SqlFct) -> Mp.Map Bs.ByteString LocalesPerKind -> [Component]
+genComponents :: Mp.Map Bs.ByteString ActionWindow -> Tm.ViewDefs -> [Menu] -> Mp.Map Bs.ByteString (Either String SqlFct, Either String SqlFct) -> Mp.Map Bs.ByteString LocalesPerKind -> [Component]
 genComponents actionWindows viewDefs leftMenus sqlOps locales =
   concatMap (\aMenu ->
       let
-        componentName = convertMenuID aMenu.mid
+        componentName = Ut.convertModuleNameGhToHs aMenu.mid
         mbActionWindow = case aMenu.action of
           Nothing -> Nothing
           Just actionID -> Mp.lookup actionID actionWindows
@@ -599,14 +602,6 @@ genComponents actionWindows viewDefs leftMenus sqlOps locales =
       in
       topComp : childrenComponents
     ) leftMenus
-
-convertMenuID :: Bs.ByteString -> Bs.ByteString
-convertMenuID oriName =
-  let
-    nameParts = concatMap (Bs.split 95) (concatMap (Bs.split 45) (Bs.split 46 oriName))  -- _ : 95, - : 45, . : 46
-  in
-  Bs.intercalate "_" (map Ut.capitalizeBs nameParts)
-
 
 saveComponent :: FilePath -> Component -> IO (Either String ())
 saveComponent destPath component =
