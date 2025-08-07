@@ -42,7 +42,7 @@ data SqlFieldDef = SqlFieldDef {
 
 instance Show SqlFieldDef where
   show field =
-    (T.unpack . T.decodeUtf8) field.nameSF <> " => " <> show field.kindSF <> " (" <> show field.params <> ")"
+    (T.unpack . T.decodeUtf8) field.oriName <> " => " <> show field.kindSF <> " (" <> show field.params <> ")" <> " n: " <> show field.nameSF
 
 data SqlFieldKind =
   VarCharSFK
@@ -113,10 +113,7 @@ genTableDefs elements =
 
 parseModel :: Py.TrytonModel -> Either String SqlTable
 parseModel model =
-  let
-    mbNameF = L.find (fieldNamed "__name__") model.fields
-  in
-  case mbNameF of
+  case L.find (fieldNamed "__name__") model.fields of
     Nothing -> Left $ "@[parseModel] model " <> model.name <> " has no __name__ field (" <> show model.fields <> ")"
     Just aField ->
       if Py.isStringLiteral aField.value then
@@ -250,7 +247,7 @@ trytonFieldToSql field =
     _ ->
       case field.value of
         Py.CallEx expr args ->
-          case extractFieldDefs field.name expr args of
+          case extractFieldDef field.name expr args of
             Left err -> Left err
             Right fieldDef ->
               Right $ Just fieldDef
@@ -259,18 +256,20 @@ trytonFieldToSql field =
         _ -> Left $ "@[trytonFieldToSql] field " <> (T.unpack . T.decodeUtf8) field.name <> " is not a call, value: " <> show field.value
 
 
-extractFieldDefs :: Bs.ByteString -> Py.Expr -> [Py.Argument] -> Either String SqlFieldDef
-extractFieldDefs fieldName expr fArgs =
+extractFieldDef :: Bs.ByteString -> Py.Expr -> [Py.Argument] -> Either String SqlFieldDef
+extractFieldDef fieldName expr fArgs =
   case expr of
     Py.DotEx sExpr label ->
       case sExpr of
         Py.VarEx vName ->
           case vName of
             "fields" ->
+              {-
               let
                 context = "fields->" <> label <> ": "
               in
-              trytonTypeToSql fieldName label fArgs
+              -}
+              fieldDefToSql fieldName label fArgs
             "state" ->
               Right (SqlFieldDef { nameSF = "state" <> "->" <> label, kindSF = CommentSFK (show fArgs), params = NonePR, oriName = fieldName, required = False })
             _ ->
@@ -279,17 +278,17 @@ extractFieldDefs fieldName expr fArgs =
     _ -> Left $ "@[extractFieldDefs] expr is not a call: " <> show expr
 
 
-trytonTypeToSql :: Bs.ByteString -> Bs.ByteString -> [Py.Argument] -> Either String SqlFieldDef
-trytonTypeToSql fieldName label fArgs =
+fieldDefToSql :: Bs.ByteString -> Bs.ByteString -> [Py.Argument] -> Either String SqlFieldDef
+fieldDefToSql fieldName label fArgs =
   case label of
     "Selection" -> tmpBuildType fieldName label fArgs
     "MultiSelection" -> tmpBuildType fieldName label fArgs
     "Reference" -> tmpBuildType fieldName label fArgs
     "Many2One" -> buildMany2One fieldName fArgs
-    "One2Many" -> tmpBuildType fieldName label fArgs
+    "One2Many" -> tmpBuildOne2Many fieldName fArgs
     "Many2Many" -> tmpBuildType fieldName label fArgs
     "One2One" -> tmpBuildType fieldName label fArgs
-    "Function" -> tmpBuildType fieldName label fArgs
+    "Function" -> tmpBuildFunction fieldName label fArgs
     "MultiValue" -> tmpBuildType fieldName label fArgs
     "Dict" -> tmpBuildType fieldName label fArgs
     _ -> buildColumn fieldName label fArgs
@@ -298,6 +297,11 @@ tmpBuildType :: Bs.ByteString -> Bs.ByteString -> [Py.Argument] -> Either String
 tmpBuildType fieldName label fArgs =
   Right (SqlFieldDef { nameSF = "TMP:" <> fieldName, kindSF = CommentSFK (show fArgs), params = NonePR, oriName = fieldName, required = False })
 
+tmpBuildOne2Many :: Bs.ByteString -> [Py.Argument] -> Either String SqlFieldDef
+tmpBuildOne2Many fieldName fArgs =
+  Right (SqlFieldDef { nameSF = "TMP:" <> fieldName, kindSF = RelationSFK One2ManySFK, params = NonePR, oriName = fieldName, required = False })
+
+
 buildOne2Many :: [Py.Argument] -> Either String SqlFieldDef
 buildOne2Many fArgs =
   Left "@[buildOne2Many] unimplemented."
@@ -305,6 +309,12 @@ buildOne2Many fArgs =
 buildFunction :: [Py.Argument] -> Either String SqlFieldDef
 buildFunction fArgs =
   Left "@[buildFunction] unimplemented."
+
+
+tmpBuildFunction :: Bs.ByteString -> Bs.ByteString -> [Py.Argument] -> Either String SqlFieldDef
+tmpBuildFunction fieldName label fArgs =
+  Right (SqlFieldDef { nameSF = "TMP:" <> fieldName, kindSF = FunctionSFK, params = NonePR, oriName = fieldName, required = False })
+
 
 buildSelection :: [Py.Argument] -> Either String SqlFieldDef
 buildSelection fArgs =
@@ -327,7 +337,7 @@ buildMany2One fieldName fArgs =
                 requiredF = hasRequiredField mods
               in
               -- TODO: get the non-null flag from mods args:
-              Right (SqlFieldDef { nameSF = joinedStr2 <> "_FK", kindSF = RelationSFK Many2OneSFK, params = ForeignKeyPR joinedStr1 joinedStr2, oriName = fieldName, required = requiredF })
+              Right (SqlFieldDef { nameSF = joinedStr2, kindSF = RelationSFK Many2OneSFK, params = ForeignKeyPR joinedStr1 joinedStr2, oriName = fieldName <> "_fk", required = requiredF })
             Nothing ->
               Left "@[buildMany2One] second arg is not a lambda arg"
         Nothing ->

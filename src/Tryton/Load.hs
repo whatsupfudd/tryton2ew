@@ -269,43 +269,7 @@ consolidateModules modules =
     , localesTA = Mp.singleton "en" allLocales
     , instancesByKindTA = instancesByKind
   }
-  {-
-  -}
 
-{-
-handleXmlFiles :: [FilePath] -> FilePath -> IO XmlDefs
-handleXmlFiles !files destPath = do
-  !startItemsTime <- getCurrentTime
-  !mbItems <- forM files $ \aFile -> do
-    !xmlDoc <- loadXmlFile aFile
-    case xmlDoc of
-      Just aDoc ->
-        let
-          items = Xm.extractMenuItems aDoc
-          (views, (fileName, dirPath, nameParts)) = Xm.extractDefinitions aFile aDoc
-        in do
-        -- putStrLn $ "@[handleXmlFiles] fn: " <> fileName <> ", dir: " <> show dirPath <> ", nameParts: " <> show nameParts <> "\n   defs: " <> show views
-        pure (items, (T.pack fileName, views))
-      Nothing -> pure ([], ("", []))
-  !endItemsTime <- getCurrentTime
-  -- putStrLn $ "@[handleXmlFiles] time to load xml files: " <> show (diffUTCTime endItemsTime startItemsTime)
-
-  let
-    !tree = Tp.buildMenuTree $ concatMap fst mbItems
-  Tp.printMenuTree tree 0 destPath
-  -- putStrLn "\n--------------------------------\n"
-
-  !startDefsTime <- getCurrentTime
-  let
-    (mInstances, viewDefs) = Tp.consolidateDefinitions $ map snd mbItems
-  -- putStrLn $ "@[handleXmlFiles] modelDefs: " <> show modelDefs
-  -- putStrLn $ "@[handleXmlFiles] viewDefs: " <> show viewDefs
-  !endDefsTime <- getCurrentTime
-  --putStrLn $ "@[handleXmlFiles] time to make viewDefs: " <> show (diffUTCTime endDefsTime startDefsTime)
-  Tp.printModelInstances mInstances destPath
-  Tp.printViewErrs viewDefs destPath
-  pure (tree, mInstances, viewDefs)
--}
 
 loadXmlFile :: FilePath -> IO (Maybe Document)
 loadXmlFile filePath = do
@@ -331,91 +295,9 @@ loadPotFiles moduleName files destPath = do
       pure $ Right $ Mp.fromList (rights potFiles)
     errs -> pure $ Left $ L.intercalate "\n" errs
 
-{-
-handlePotFiles :: String -> [FilePath] -> FilePath -> IO Po.LocaleDefs
-handlePotFiles moduleName files destPath = do
-  !startParseTime <- getCurrentTime
-  !potFiles <- forM files $ \aFile -> do
-    !potDoc <- Po.parseLocFileWithDiagnostics aFile
-    let
-      -- moduleName = takeDirectory aFile
-      fileName = takeFileName aFile
-    pure (T.pack moduleName, T.pack fileName, potDoc)
-  !endParseTime <- getCurrentTime
-  -- putStrLn $ "@[handlePotFiles] time to parse: " <> show (map takeBaseName files) <> ": "<> show (diffUTCTime endParseTime startParseTime)
-
-  -- putStrLn "\n-- Debug potFiles: --\n"
-  {- This will be handled on a per-module basis:
-  TIO.writeFile (destPath </> "potFiles.txt") . T.pack . L.intercalate "\n" $ map (\(mName, fileName, rez) ->
-      T.unpack (mName <> ":" <> fileName) <> "\n"
-      <> case rez of
-            Left err -> "err: " <> show err
-            Right potDoc -> show potDoc
-    ) potFiles
-  -}
-  -- putStrLn "\n--------------------------------\n"
-
-  !startProcTime <- getCurrentTime
-  let
-    (errors, locEntries) = foldr (\(mName, locale, aResult) (errs, corrects) ->
-        case aResult of
-          Left err -> (err : errs, corrects)
-          Right locEntries -> (errs, (T.encodeUtf8 mName, T.encodeUtf8 locale, locEntries) : corrects)
-      ) ([], []) potFiles
-    reorgLocales =
-      foldl (\accum (mName, locale, locFile) ->
-        let
-          updLocale = Po.fixLocale locale mName
-        in
-        case Mp.lookup updLocale accum of
-            Just moduleMap ->
-              let
-                updModuleMap = Mp.insertWith (++) mName locFile.entriesFI moduleMap
-              in
-              Mp.insert updLocale updModuleMap accum
-            Nothing ->
-              let
-                newModuleMap = Mp.singleton mName locFile.entriesFI
-              in
-              Mp.insert updLocale newModuleMap accum
-        ) (Mp.empty :: Mp.Map Bs.ByteString (Mp.Map Bs.ByteString [Po.LocEntry])) locEntries
-  !endProcTime <- getCurrentTime
-  -- putStrLn $ "@[handlePotFiles] time to process: " <> show (diffUTCTime endProcTime startProcTime)
-  -- TIO.writeFile (destPath </> "reorgLocales.txt") $ T.pack (show reorgLocales)
-  pure reorgLocales
--}
-
 
 loadPyFiles :: [FilePath] -> FilePath -> IO [(FilePath, [Py.LogicElement])]
 loadPyFiles files destPath = do
   forM files $ \aFile -> do
     !elements <- Py.extractElements aFile
     pure (aFile, elements)
-
-  -- Old code:
-  -- !startParseTime <- getCurrentTime
-  -- !endParseTime <- getCurrentTime
-  -- putStrLn $ "@[loadPyFiles] time to parse: " <> show (diffUTCTime endParseTime startParseTime)
-  -- putStrLn "\n-- Debug elements: --\n"
-  {- TODO: move this into a per-module step:
-  TIO.writeFile (destPath </> "elements.txt") . T.pack . L.intercalate "\n" $ map (\(fp, ms) ->  fp <> ":\n" <> show ms <> "\n") allElements
-  --putStrLn "\n--------------------------------\n"
-  -}
-
-  {- This will be handled on a per-module basis:
-  !startGenTime <- getCurrentTime
-  let
-    eiClassDefs = map (\(f, elements) -> (f, Sq.genTableDefs elements)) allElements
-  TIO.writeFile (destPath </> "tableDefs.sql") . T.pack . L.intercalate "\n" $ map (\(f, eiTableDefs) ->
-      let
-        msgs = foldl (\accum td ->
-           case td of
-             Left err -> accum <> err <> "\n"
-             Right tableDef -> accum <> show tableDef <> "\n"
-          ) "" eiTableDefs
-      in
-      "@[loadPyFiles] " <> f <> if msgs == "" then "" else ":\n" <> msgs
-    ) eiClassDefs
-  !endGenTime <- getCurrentTime
-  putStrLn $ "@[loadPyFiles] time to process: " <> show (diffUTCTime endGenTime startGenTime)
-  -}

@@ -3,9 +3,9 @@
 module Parsing.Python where
 
 import qualified Data.ByteString as Bs
-import Data.Either (rights)
+import Data.Either (rights, lefts, partitionEithers)
 import Data.List (intercalate)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (mapMaybe, catMaybes)
 import qualified Data.Map as Mp
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -46,7 +46,9 @@ data TrytonModel = TrytonModel {
 data TargetClass =
   SqlTC
   | ViewTC
+  | PoolMetaTC
   | BothTC
+  | MixedTC Int
   deriving (Show, Eq)
 
 data ClassStmt =
@@ -187,47 +189,64 @@ extractElements filePath = do
       putStrLn $ "Error parsing file: " <> filePath <> " " <> show err
       pure []
     Right (Pc.Module statements, _) ->
-      pure $ analyzeStatements statements
+      let
+        (models, errors) = analyzeStatements statements
+      in do
+      -- putStrLn $ "@[extractElements] file: " <> filePath <> "\n"
+      --putStrLn $ "@[extractElements] errors: " <> intercalate "\n" (map show errors)
+      pure models
 
 
-analyzeStatements :: forall annot. Show annot => [Pc.Statement annot] -> [LogicElement]
+analyzeStatements :: forall annot. Show annot => [Pc.Statement annot] -> ([LogicElement], [String])
 analyzeStatements statements =
   let
     eiModels = map analyzeTopStmt statements
+    todos_1 = lefts eiModels
+    todos_2 = concatMap snd $ rights eiModels
+    logicElements = map fst $ rights eiModels
   in
-  rights eiModels
+  (logicElements, todos_1 <> todos_2)
 
 
-analyzeTopStmt :: forall annot. Show annot => Pc.Statement annot -> Either String LogicElement
+analyzeTopStmt :: forall annot. Show annot => Pc.Statement annot -> Either String (LogicElement, [String])
 analyzeTopStmt statement =
   case statement of
     Pc.Class { class_name = name, class_args = args, class_body = body } ->
       let
         superclasses = mapMaybe decodeArg args
         isTarget = if "ModelSQL" `elem` superclasses then 1 else 0 + if "ModelView" `elem` superclasses then 2 else 0
+          + if "meta:PoolMeta" `elem` superclasses then 4 else 0
       in
       if isTarget > 0 then
         let
-          classStmts = mapMaybe analyzeClassStmt body
-          fields = extractFields classStmts
-          stmts = extractStmts classStmts
+          eiClassStmts = map analyzeClassStmt body
+          (todos, classStmts) = partitionEithers eiClassStmts
+          fields = extractFields (catMaybes classStmts)
+          stmts = extractStmts (catMaybes classStmts)
         in
-        Right . ModelEl $ TrytonModel {
+        Right ( ModelEl $ TrytonModel {
               name = name.ident_string
-            , superclasses = mapMaybe decodeArg args
+            , superclasses = superclasses
             , tClasses = case isTarget of
                 1 -> SqlTC
                 2 -> ViewTC
-                _ -> BothTC
+                4 -> PoolMetaTC
+                3 -> BothTC
+                _ -> MixedTC isTarget
             , fields = Mp.fromList [ (T.decodeUtf8 f.name, f) | f <- fields ]
             , body = stmts
           }
+          , todos)
       else
-        Right $ ClassEl name.ident_string
+        Right (ClassEl name.ident_string, [])
     Pc.Assign { assign_to = target, assign_expr = expr } ->
-      Right $ AssignEl $ Assign { target = map decodeTargetExpr target, value = evalExpr expr }
+      Right (AssignEl $ Assign { target = map decodeTargetExpr target, value = evalExpr expr }, [])
+    Pc.Fun { fun_name = name, fun_args = args, fun_body = body } ->
+      Left $ "@[analyzeTopStmt] Unsupported: function" <> show name
+    Pc.Decorated { decorated_decorators = decorators, decorated_def = body, stmt_annot = annot } ->
+      Left $ "@[analyzeTopStmt] Unsupported: decorator" <> show decorators
     _ ->
-      Left "Not a class"
+      Left $ "@[analyzeTopStmt] not a class/assign:" <> show statement
 
 
 extractFields :: [ClassStmt] -> [Field]
@@ -236,13 +255,13 @@ extractFields =
     case cs of
       FieldCS assignEx ->
         let
-          fileName =
+          fieldName =
             if all isStringLiteral assignEx.target then
               Bs.intercalate "." (concatMap extractStringLiteral assignEx.target)
             else
               Bs.intercalate "." (map bsShowExpr assignEx.target)
         in
-        Field { name = fileName, value = assignEx.value } : accum
+        Field { name = fieldName, value = assignEx.value } : accum
       StatementCS _ -> accum
   ) []
 
@@ -273,21 +292,21 @@ The class statements in the AST that we are interested in are:
       }
   | StmtExpr { stmt_expr :: Expr annot, stmt_annot :: annot }
 -}
-analyzeClassStmt :: forall annot. Show annot => Pc.Statement annot -> Maybe ClassStmt
+analyzeClassStmt :: forall annot. Show annot => Pc.Statement annot -> Either String (Maybe ClassStmt)
 analyzeClassStmt statement =
   case statement of
     Pc.Assign { assign_to = target, assign_expr = expr } ->
-      Just . FieldCS $ Assign { target = map decodeTargetExpr target, value = evalExpr expr }
+      Right $ Just . FieldCS $ Assign { target = map decodeTargetExpr target, value = evalExpr expr }
     Pc.StmtExpr { stmt_expr = expr } ->
       if isPyStringLiteral expr then
         let
           strLit = extractStringLiteral (evalExpr expr)
         in
-        Just . StatementCS $ Comment strLit
+        Right $ Just . StatementCS $ Comment strLit
       else
-        Just . StatementCS $ Other (evalExpr expr)
+        Right $ Just . StatementCS $ Other (evalExpr expr)
     _ ->
-      Nothing
+      Left $ "@[analyzeClassStmt] not an assign/stmt:" <> show statement
 
 
 isPyStringLiteral :: Pc.Expr annot -> Bool
@@ -311,9 +330,9 @@ extractStringLiteral expr =
 
 removeQuotes :: Bs.ByteString -> Bs.ByteString
 removeQuotes aString =
-  if Bs.isPrefixOf "\'" aString then 
+  if Bs.isPrefixOf "\'" aString then
     Bs.dropWhileEnd (== 39) . Bs.dropWhile (== 39) $ aString
-  else 
+  else
     Bs.dropWhileEnd (== 34) . Bs.dropWhile (== 34) $ aString
 
 {-
@@ -641,11 +660,12 @@ decodeTargetExpr expr =
 
 decodeArg :: Pc.Argument annot -> Maybe String
 decodeArg arg =
+  -- TODO: handle the "metaclass=PoolMeta" situations:
   case arg of
     Pc.ArgExpr {arg_expr = e, arg_annot = a} ->
       case e of
         Pc.Var ident annot ->
-          Just $ ident.ident_string
+          Just ident.ident_string
         _ -> Nothing
     Pc.ArgKeyword {arg_expr = e, arg_annot = a} ->
       case e of
@@ -700,3 +720,365 @@ evalArgs arg =
         Pc.Var ident annot ->
           NamedArg (T.encodeUtf8 . T.pack $ k.ident_string) (LiteralEx $ StringLit [T.encodeUtf8 . T.pack $ ident.ident_string])
         _ -> NamedArg (T.encodeUtf8 . T.pack $ k.ident_string) (evalExpr e)
+
+{-
+Statements:
+
+Import : Import statement.
+- import_items :: [ImportItem annot]	 : Items to import.
+- stmt_annot :: annot	 
+
+
+FromImport	: From ... import statement.
+- from_module :: ImportRelative annot	 : Module to import from.
+- from_items :: FromItems annot	 : Items to import.
+- stmt_annot :: annot	 
+
+
+While	: While loop.
+- while_cond :: Expr annot	 : Loop condition.
+- while_body :: Suite annot	 : Loop body.
+- while_else :: Suite annot	 : Else clause.
+- stmt_annot :: annot	 
+
+
+For	: For loop.
+- for_targets :: [Expr annot]	 : Loop variables.
+- for_generator :: Expr annot	 : Loop generator.
+- for_body :: Suite annot	 : Loop body.
+- for_else :: Suite annot	 : Else clause.
+- stmt_annot :: annot	 
+
+
+AsyncFor	: AsyncFor statement.
+- for_stmt :: Statement annot	 : For statement.
+- stmt_annot :: annot	 
+
+
+Fun	: Function definition.
+- fun_name :: Ident annot	 : Function name.
+- fun_args :: [Parameter annot]	 : Function parameter list.
+- fun_result_annotation :: Maybe (Expr annot)	 : Optional result annotation.
+- fun_body :: Suite annot	 : Function body.
+- stmt_annot :: annot	 
+
+
+AsyncFun	: AsyncFun statement.
+- fun_def :: Statement annot	 : Function definition (Fun).
+- stmt_annot :: annot	 
+
+
+Class	: Class definition.
+- class_name :: Ident annot	 : Class name.
+- class_args :: [Argument annot]	 : Class argument list.
+- class_body :: Suite annot	 : Class body.
+- stmt_annot :: annot	 
+
+
+Conditional	: Conditional statement (if-elif-else).
+- cond_guards :: [(Expr annot, Suite annot)]	 : Sequence of if-elif conditional clauses.
+- cond_else :: Suite annot	 : Possibly empty unconditional else clause.
+- stmt_annot :: annot	 
+
+
+Assign	: Assignment statement.
+- assign_to :: [Expr annot]	 : Entity to assign to.
+- assign_expr :: Expr annot	 : Expression to evaluate.
+- stmt_annot :: annot	 
+
+
+AugmentedAssign	: Augmented assignment statement.
+- aug_assign_to :: Expr annot	 : Entity to assign to.
+- aug_assign_op :: AssignOp annot	 : Assignment operator (for example '+=').
+- aug_assign_expr :: Expr annot	 : Expression to evaluate.
+- stmt_annot :: annot	 
+
+
+AnnotatedAssign	: Annotated assignment statement.
+- ann_assign_annotation :: Expr annot	 : Annotation for the assigned value.
+- ann_assign_to :: Expr annot	 : Entity to assign to.
+- ann_assign_expr :: Maybe (Expr annot)	 : Expression to evaluate.
+- stmt_annot :: annot	 
+
+
+Decorated	: Decorated definition of a function or class.
+- decorated_decorators :: [Decorator annot]	 : Decorators.
+- decorated_def :: Statement annot	 : Function or class definition to be decorated.
+- stmt_annot :: annot	 
+
+
+Return	: Return statement (may only occur syntactically nested in a function definition).
+- return_expr :: Maybe (Expr annot)	 : Optional expression to evaluate and return to caller.
+- stmt_annot :: annot	 
+
+
+Try	: Try statement (exception handling).
+- try_body :: Suite annot	 : Try clause.
+- try_excepts :: [Handler annot]	 : Exception handlers.
+- try_else :: Suite annot	 : Possibly empty else clause, executed if and when control flows off the end of the try clause.
+- try_finally :: Suite annot	 : Possibly empty finally clause.
+- stmt_annot :: annot	 
+
+
+Raise	: Raise statement (exception throwing).
+- raise_expr :: RaiseExpr annot	 : Expression to evaluate and raise.
+- stmt_annot :: annot	 
+
+
+With	: With statement (context management).
+- with_context :: [(Expr annot, Maybe (Expr annot))]	 : Context expression(s) (yields a context manager).
+- with_body :: Suite annot	 : Suite to be managed.
+- stmt_annot :: annot	 
+
+
+AsyncWith	: AsyncWith statement.
+- with_stmt :: Statement annot	 : With statement.
+- stmt_annot :: annot	 
+
+
+Pass	: Pass statement (null operation).
+- stmt_annot :: annot	 
+
+
+Break	: Break statement (may only occur syntactically nested in a for or while loop, but not nested in a function or class definition within that loop).
+- stmt_annot :: annot	 
+
+
+Continue	: Continue statement (may only occur syntactically nested in a for or while loop, but not nested in a function or class definition or finally clause within that loop).
+- stmt_annot :: annot	 
+
+
+Delete	: Del statement (delete).
+- del_exprs :: [Expr annot]	 : Items to delete.
+- stmt_annot :: annot	 
+
+
+StmtExpr	: Expression statement.
+- stmt_expr :: Expr annot	 : Expression to evaluate.
+- stmt_annot :: annot	 
+
+
+Global	: Global declaration.
+- global_vars :: [Ident annot]	 : Variables declared global in the current block.
+- stmt_annot :: annot	 
+
+
+NonLocal	: Nonlocal declaration. Version 3.x only.
+- nonLocal_vars :: [Ident annot]	 : Variables declared nonlocal in the current block (their binding comes from bound the nearest enclosing scope).
+- stmt_annot :: annot	 
+
+
+Assert	: Assertion.
+- assert_exprs :: [Expr annot]	 : Expressions being asserted.
+- stmt_annot :: annot	 
+
+
+** Version 2 only **
+Print	: Print statement.
+- print_chevron :: Bool	 : Optional chevron (>>)
+- print_exprs :: [Expr annot]	 : Arguments to print
+- print_trailing_comma :: Bool	 : Does it end in a comma?
+- stmt_annot :: annot	 
+
+Exec	: Exec statement. 
+- exec_expr :: Expr annot	 : Expression to exec.
+- exec_globals_locals :: Maybe (Expr annot, Maybe (Expr annot))	 : Global and local environments to evaluate the expression within.
+- stmt_annot :: annot	 
+
+stmt_annot :: annot	 
+
+-}
+
+data StatementPy =
+  AssignPy AssignST
+  | WhilePy WhileST
+  | ForPy ForST
+  | AsyncForPy AsyncForST
+  | FunPy FunST
+  | ClassPy ClassST
+  | ConditionalPy ConditionalST
+  | ReturnPy ReturnST
+  | TryPy TryST
+  | RaisePy RaiseST
+  | WithPy WithST
+  | AsyncWithPy AsyncWithST
+  | PassPy
+  | BreakPy
+  | ContinuePy
+  | DeletePy DeleteST
+  | StmtExprPy StmtExprST
+  | GlobalPy GlobalST
+  | NonLocalPy NonLocalST
+  | AssertPy AssertST
+  deriving (Show, Eq)
+
+
+data AssignST = AssignST {
+  target :: [Expr],
+  value :: Expr
+  }
+  deriving (Show, Eq)
+
+data WhileST = WhileST {
+  cond :: Expr,
+  body :: [StatementPy],
+  else_ :: [StatementPy]
+  }
+  deriving (Show, Eq)
+
+data ForST = ForST {
+  targets :: [Expr],
+  generator :: Expr,
+  body :: [StatementPy],
+  else_ :: [StatementPy]
+  }
+  deriving (Show, Eq)
+
+newtype AsyncForST = AsyncForST {
+  stmt :: StatementPy
+  }
+  deriving (Show, Eq)
+
+data FunST = FunST {
+  name :: Bs.ByteString,
+  args :: [Argument],
+  result :: Expr,
+  body :: [StatementPy]
+  }
+  deriving (Show, Eq)
+
+data ClassST = ClassST {
+  name :: Bs.ByteString,
+  args :: [Argument],
+  body :: [StatementPy]
+  }
+  deriving (Show, Eq)
+
+data ConditionalST = ConditionalST {
+  guards :: [(Expr, Expr)],
+  else_ :: [StatementPy]
+  }
+  deriving (Show, Eq)
+
+newtype ReturnST = ReturnST {
+  expr :: Expr
+  }
+  deriving (Show, Eq)
+
+data TryST = TryST {
+  body :: [StatementPy],
+  excepts :: [(Expr, Expr)],
+  else_ :: [StatementPy],
+  finally_ :: [StatementPy]
+  }
+  deriving (Show, Eq)
+
+newtype RaiseST = RaiseST {
+  expr :: Expr
+  }
+  deriving (Show, Eq)
+
+data WithST = WithST {
+  context :: [(Expr, Expr)],
+  body :: [StatementPy]
+  }
+  deriving (Show, Eq)
+
+newtype AsyncWithST = AsyncWithST {
+  stmt :: StatementPy
+  }
+  deriving (Show, Eq)
+
+
+newtype DeleteST = DeleteST {
+  exprs :: [Expr]
+  }
+  deriving (Show, Eq)
+
+newtype StmtExprST = StmtExprST {
+  expr :: Expr
+  }
+  deriving (Show, Eq)
+
+newtype GlobalST = GlobalST {
+  vars :: [Bs.ByteString]
+  }
+  deriving (Show, Eq)
+
+newtype NonLocalST = NonLocalST {
+  vars :: [Bs.ByteString]
+  }
+  deriving (Show, Eq)
+
+newtype AssertST = AssertST {
+  exprs :: [Expr]
+  }
+  deriving (Show, Eq)
+
+{-- TODO:
+evalStmt :: forall annot. Show annot => Pc.Statement annot -> Either String StatementPy
+evalStmt stmt =
+  case stmt of
+    Pc.Assign { assign_to = target, assign_expr = expr } ->
+      Right . AssignPy $ AssignST { target = map decodeTargetExpr target, value = evalExpr expr }
+    Pc.While { while_cond = cond, while_body = body, while_else = else_ } ->
+      let
+        (bodyErrs, bodyParts) = partitionEithers $ map evalStmt body
+      in
+      if lefts eiParams || isLeft eiResult || not (null bodyErrs) then
+        Left err
+      else
+        Right . WhilePy $ WhileST { cond = evalExpr cond, body = bodyParts, else_ = evalExpr else_ }
+    Pc.For { for_targets = targets, for_generator = generator, for_body = body, for_else = else_ } ->
+      Right . ForPy $ ForST { targets = map evalExpr targets, generator = evalExpr generator, body = evalExpr body, else_ = evalExpr else_ }
+    Pc.AsyncFor { for_stmt = stmt, stmt_annot = annot } ->
+      case evalStmt stmt of
+        Right stmt -> Right . AsyncForPy $ AsyncForST { stmt = stmt }
+        Left err -> Left err
+    Pc.Fun { fun_name = name, fun_args = args, fun_result_annotation = result, fun_body = body, stmt_annot = annot } ->
+      let
+        eiParams = map evalParams args
+        eiResult = evalExpr <$> result
+        (bodyErrs, bodyParts) = partitionEithers $ map evalStmt body
+      in
+      if lefts eiParams || isLeft eiResult || not (null bodyErrs) then
+        Left err
+      else
+        Right . FunPy $ FunST { name = T.encodeUtf8 . T.pack $ name.ident_string, args = rights eiParams, result = isRight eiResult, body = bodyParts }
+    Pc.Class { class_name = name, class_args = args, class_body = body, stmt_annot = annot } ->
+      Right . ClassPy $ ClassST { name = T.encodeUtf8 . T.pack $ name.ident_string, args = map evalParams args, body = evalExpr body }
+    Pc.Conditional { cond_guards = guards, cond_else = else_ } ->
+      Right . ConditionalPy $ ConditionalST { guards = map (\(cond, body) -> (evalExpr cond, evalExpr body)) guards, else_ = evalExpr else_ }
+    Pc.Return { return_expr = expr } ->
+      Right . ReturnPy $ ReturnST { expr = evalExpr expr }
+    Pc.Try { try_body = body, try_excepts = excepts, try_else = else_, try_finally = finally_ } ->
+      Right . TryPy $ TryST { body = evalExpr body, excepts = map (\(cond, body) -> (evalExpr cond, evalExpr body)) excepts, else_ = evalExpr else_, finally_ = evalExpr finally_ }
+    Pc.Raise { raise_expr = expr } ->
+      Right . RaisePy $ RaiseST { expr = evalExpr expr }
+    Pc.With { with_context = context, with_body = body, stmt_annot = annot } ->
+      Right . WithPy $ WithST { context = map (\(cond, body) -> (evalExpr cond, evalExpr body)) context, body = evalExpr body }
+    Pc.AsyncWith { with_stmt = stmt, stmt_annot = annot } ->
+      Right . AsyncWithPy $ AsyncWithST { stmt = evalStmt stmt }
+    Pc.Pass { stmt_annot = annot } ->
+      Right PassPy
+    Pc.Break { stmt_annot = annot } ->
+      Right BreakPy
+    Pc.Continue { stmt_annot = annot } ->
+      Right ContinuePy
+    Pc.Delete { del_exprs = exprs, stmt_annot = annot } ->
+      Right . DeletePy $ DeleteST { exprs = map evalExpr exprs }
+    Pc.StmtExpr { stmt_expr = expr, stmt_annot = annot } ->
+      Right . StmtExprPy $ StmtExprST { expr = evalExpr expr }
+    Pc.Global { global_vars = vars, stmt_annot = annot } ->
+      Right . GlobalPy $ GlobalST { vars = map (\var -> T.encodeUtf8 . T.pack $ var.ident_string) vars }
+    Pc.NonLocal { nonLocal_vars = vars, stmt_annot = annot } ->
+      Right . NonLocalPy $ NonLocalST { vars = map (\var -> T.encodeUtf8 . T.pack $ var.ident_string) vars }
+    Pc.Assert { assert_exprs = exprs, stmt_annot = annot } ->
+      Right . AssertPy $ AssertST { exprs = map evalExpr exprs }
+    _ -> Left $ "@[evalStmt] not implemented: " <> show stmt
+  
+
+evalParams :: forall annot. Show annot => Pc.Parameter annot -> Either String Argument
+evalParams param =
+  Left $ "@[evalParams] not implemented: " <> show param
+--}

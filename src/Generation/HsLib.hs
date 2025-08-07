@@ -19,6 +19,7 @@ import qualified Generation.EwTypes as Ew
 import qualified Generation.Utils as U
 
 import Generation.Utils (upperSnake)
+import Data.List (partition)
 
 genSqlFctFile :: FilePath -> Bs.ByteString -> Bs.ByteString -> [Either String Ew.SqlFct] -> IO ()
 genSqlFctFile dirPath modContainer modName sqlFcts =
@@ -38,7 +39,7 @@ import Data.Profunctor (rmap)
 
 import GHC.Generics (Generic)
 
-import Data.Aeson (encode, FromJSON (..), ToJSON, fromJSON, Result(..), withObject, (.:))
+import Data.Aeson (ToJSON, toJSON, Value)
 
 import Hasql.Session (Session, statement)
 import Hasql.Statement (Statement (..))
@@ -75,24 +76,36 @@ genSqlOps tableMap ttModels =
 genFctDispatcher :: FilePath -> Mp.Map Bs.ByteString (Either String Ew.SqlFct, Either String Ew.SqlFct) -> IO ()
 genFctDispatcher filePath sqlOps =
   let
-    header = [r|module Wapp.Apps.GnuHealth.FctDispatcher where
+    header = [r|{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+module Wapp.Apps.GnuHealth.FctDispatcher where
 
 import qualified Data.ByteString.Lazy as Lbs
 import Data.Int (Int32)
+import qualified Data.Map as Mp
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Map as Mp
+import qualified Data.Text.Encoding as T
 import Data.Vector (Vector)
+
+import GHC.Generics
 
 import qualified Data.Aeson as Ae
 
-import Hasql.Pool (Pool, use)
-import Hasql.Session (Session, statement)
+import Hasql.Pool (Pool)
 
 import qualified Wapp.AppDef as Wd
 
 import Wapp.Apps.GnuHealth.Types
 import qualified Wapp.Apps.GnuHealth.DB as Gdb
+
+
+data DbResult = DbResult {
+    headers :: Text
+    , content :: Ae.Value
+  }
+  deriving (Show, Generic, Ae.ToJSON)
+
 
 dispatch :: Wd.NativeLibFunction
 dispatch dbPool (aeValue, mbLabel) =
@@ -105,11 +118,18 @@ dispatch dbPool (aeValue, mbLabel) =
         Just targetFct -> do
           rezA <- targetFct dbPool fetchRequest
           case rezA of
-            Left err -> pure . Left . show $ err
-            Right rows ->
-              pure $ Right rows
+            Left err -> do
+              putStrLn $ "@[dispatch] err: " <> err
+              pure . Left $ err
+            Right (headers, rows) ->
+              let
+                dbResult = DbResult headers rows
+              in do
+              putStrLn $ "@[dispatch] sending back rows: " <> show rows <> " => " <> show dbResult <> " --> " <> show (Ae.encode dbResult)
+              pure . Right $ Ae.encode dbResult
 
-findTargetFct :: Text -> Maybe (Pool -> TreeFetchRequest -> IO (Either String Lbs.ByteString))
+
+findTargetFct :: Text -> Maybe (Pool -> TreeFetchRequest -> IO (Either String (Text, Ae.Value)))
 findTargetFct fctName =
   case fctName of
 |]
@@ -157,24 +177,43 @@ sqlGenFetcher tableDef ttModels =
   let
     sqlTableName = Sq.modelToSqlName tableDef.nameST
     fctName = sqlTableName <> "_fetch"
-    joints = filter (\field -> case field.kindSF of Sq.RelationSFK _ -> True; _ -> False) tableDef.fieldsST
-    nonJoints = filter (\field -> case field.kindSF of Sq.RelationSFK _ -> False; _ -> True) tableDef.fieldsST
-    fields = map (\field ->
-        let
-          fieldType = sqlToHasqlType field.kindSF
-        in
-        Sq.quoteReservedWord field.oriName <> "::" <> fieldType <> if field.required then "" else "?"
+    (joints, nonJoints) = partition (\field -> case field.kindSF of Sq.RelationSFK _ -> True; _ -> False) tableDef.fieldsST
+    tmpFields = mapMaybe (\field ->
+        case field.kindSF of
+          Sq.RelationSFK relKind -> Nothing
+          -- That can't happen if the joints are filtered out.
+          Sq.FunctionSFK -> Nothing
+          -- What else is coming here?
+          _ ->
+            Just (
+              Sq.quoteReservedWord field.oriName <> "::" <> sqlToHasqlType field.kindSF <> if field.required then "" else "?"
+              , field)
       ) nonJoints
-    hsOutType = genTypeList nonJoints
+    allSelectInfo = foldr (\(pos, field) accum ->
+        case field.kindSF of
+          Sq.RelationSFK relKind -> accum
+          _ ->
+            let
+              hsType = genHsTypeForField field
+              hasqlType = genHasqlDataType field pos
+              hsSqlType = sqlToHsType field.kindSF
+              encRowFct = "HD.column " <> (if field.required then "(HD.nonNullable HD." else "(HD.nullable HD.") <> hsSqlType <> ")"
+              encTupleFct = "HD.column " <> (if field.required then "(HD.nonNullable HD." else "(HD.nullable HD.") <> hsSqlType <> ")"
+            in
+            (hsType, hasqlType, encRowFct, encTupleFct) : accum
+      ) [] (zip [1..] tableDef.fieldsST)
+    fields = map fst tmpFields
+    acceptedFieldDefs = map snd tmpFields
+    hsOutType = genTypeList acceptedFieldDefs
     outDataName = "Out_" <> sqlTableName
-    encoderType = genDataType outDataName nonJoints
+    encoderType = genDataType outDataName acceptedFieldDefs
     encoderName = "enc_" <> sqlTableName
-    encoderFct = genEncoder encoderName outDataName nonJoints
+    encoderFct = genEncoder encoderName outDataName acceptedFieldDefs
     tplEncoderName = "tpl_" <> encoderName
-    encoderTupleFct = genTupleEncoder tplEncoderName outDataName nonJoints
-    -- hsOutType = if length nonJoints < 2 then outType else "(" <> outType <> ")"
+    encoderTupleFct = genTupleEncoder tplEncoderName outDataName acceptedFieldDefs
+    -- hsOutType = if length acceptedFieldDefs < 2 then outType else "(" <> outType <> ")"
     -- Int32 -> Int32 -> Session (Vector " <> hsOutType <> ")
-    fctDef = fctName <> " :: Pool -> TreeFetchRequest -> IO (Either String Lbs.ByteString)\n"
+    fctDef = fctName <> " :: Pool -> TreeFetchRequest -> IO (Either String (Text, Value))\n"
               <> fctName <> " dbPool fetchReq = do\n"
               <> "  ieRezA <- use dbPool $ statement (fetchReq.offsetTP, fetchReq.limitTP) $\n"
     statement = "    rmap (fmap " <> tplEncoderName <> ") "
@@ -185,7 +224,7 @@ sqlGenFetcher tableDef ttModels =
           <> "\n    |]\n\n"
     ending = "  case ieRezA of\n"
             <> "    Left err -> pure . Left . show $ err\n"
-            <> "    Right recList -> pure . Right . encode $ recList"
+            <> "    Right recList -> pure $ Right (\"" <> hsOutType <> "\", toJSON $ recList)"
   in
   if null fields then
       Left $ "@[sqlGenFetcher] no fields for table: " <> (T.unpack . T.decodeUtf8) sqlTableName
@@ -242,17 +281,20 @@ sqlGenInserter tableDef ttModels =
 genTypeList :: [Sq.SqlFieldDef] -> Bs.ByteString
 genTypeList fields =
   let
-    types = Bs.intercalate ", " $ map (\f ->
-        let
-          baseType = sqlToHsType f.kindSF
-        in
-        if f.required then baseType else "Maybe " <> baseType
-      ) fields
+    types = Bs.intercalate ", " $ map genHsTypeForField fields
   in
     case fields of
       [] -> "()"
       [a] -> if Sq.required (head fields) then types else "(" <> types <> ")"
       _ -> "(" <> types <> ")"
+
+
+genHsTypeForField :: Sq.SqlFieldDef -> Bs.ByteString
+genHsTypeForField field =
+  let
+    baseType = sqlToHsType field.kindSF
+  in
+  if field.required then baseType else "Maybe " <> baseType
 
 
 genDataType :: Bs.ByteString -> [Sq.SqlFieldDef] -> Bs.ByteString
@@ -270,6 +312,15 @@ genDataType typeName fields =
     derivingClause = if null fields then "" else "\n  deriving (Generic, Show, ToJSON)"
   in
     typeSpec <> " " <> typeImpl <> derivingClause
+
+genHasqlDataType :: Sq.SqlFieldDef -> Int -> Bs.ByteString
+genHasqlDataType field pos =
+  let
+    baseType = sqlToHsType field.kindSF
+  in
+  "f_" <> (T.encodeUtf8 . T.pack . show) pos <> " :: "
+      <> if field.required then baseType else "Maybe " <> baseType
+
 
 
 genEncoder :: Bs.ByteString -> Bs.ByteString -> [Sq.SqlFieldDef] -> Bs.ByteString

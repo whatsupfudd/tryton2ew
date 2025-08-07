@@ -89,6 +89,10 @@ generateApp destPath tApp =
       in do
       putStrLn $ "@[generateApp] # components: " <> show (length components)
       putStrLn $ "@[generateApp] allInstances: " <> L.intercalate "\n  , " (map (\(k, v) -> T.unpack k <> " : " <> show (length v)) (Mp.toList tApp.instancesByKindTA))
+      putStrLn $ "@[generateApp] allSqlModels: "
+          <> L.intercalate "\n\n" (map (\sTb -> T.unpack (T.decodeUtf8 sTb.nameST) <> " :\n - "
+            <> L.intercalate "\n - " (map show sTb.fieldsST)) (Mp.elems allSqlModels)
+          )
       putStrLn $ "@[generateApp] .po(t) parsing errors: " <> show (errors <$> enLocales)
       -- putStrLn $ "@[generateApp] field locales: " <> showFieldLocales enLocales
       TIO.writeFile (destPath </> "wapp/Protected/LeftMenuNav.elm") (T.decodeUtf8 renderedMenus)
